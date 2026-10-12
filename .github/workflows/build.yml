@@ -11,6 +11,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/ha_satimage
+  DEPLOY_IMAGE_NAME: ${{ github.repository_owner }}/ha_satellite
 
 permissions:
   contents: read
@@ -49,7 +50,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY }}/${{ env.DEPLOY_IMAGE_NAME }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -106,7 +109,7 @@ jobs:
         if: steps.superseded.outputs.skip == 'false'
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.DEPLOY_IMAGE_NAME }}
         shell: bash
         run: |
           set -euo pipefail

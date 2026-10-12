@@ -23,6 +23,7 @@ def test_deployment_contract(deploy_job):
     workflow = yaml.safe_load((ROOT / ".github/workflows/build.yml").read_text())
     build = workflow["jobs"]["build"]
     assert workflow["env"]["IMAGE_NAME"] == "${{ github.repository_owner }}/ha_satimage"
+    assert workflow["env"]["DEPLOY_IMAGE_NAME"] == "${{ github.repository_owner }}/ha_satellite"
     assert build["outputs"]["digest"] == "${{ steps.build.outputs.digest }}"
     assert any(
         step.get("id") == "build" and step["uses"] == "docker/build-push-action@v6"
@@ -45,8 +46,22 @@ def test_deployment_contract(deploy_job):
     assert guard["env"]["REPOSITORY"] == "${{ github.repository }}"
     assert deploy["if"] == "steps.superseded.outputs.skip == 'false'"
     assert deploy["env"]["DIGEST"] == "${{ needs.build.outputs.digest }}"
-    assert deploy["env"]["IMAGE"] == "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+    assert deploy["env"]["IMAGE"] == "${{ env.REGISTRY }}/${{ env.DEPLOY_IMAGE_NAME }}"
     assert all("${{" not in step["run"] for step in deploy_job["steps"])
+
+
+def test_build_publishes_both_image_names_with_the_same_digest():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build.yml").read_text())
+    build = workflow["jobs"]["build"]
+    metadata = next(step for step in build["steps"] if step.get("id") == "meta")
+    assert metadata["with"]["images"].splitlines() == [
+        "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",
+        "${{ env.REGISTRY }}/${{ env.DEPLOY_IMAGE_NAME }}",
+    ]
+    publish = next(step for step in build["steps"] if step.get("id") == "build")
+    assert publish["with"]["tags"] == "${{ steps.meta.outputs.tags }}"
+    assert publish["with"]["push"] == "${{ github.event_name != 'pull_request' }}"
+    assert build["outputs"]["digest"] == "${{ steps.build.outputs.digest }}"
 
 
 def run_step(tmp_path, step, command, script, **env):
@@ -115,14 +130,18 @@ def test_digest_deployment_and_failure_propagation(tmp_path, deploy_job, exit_co
         '  echo "ha-deploy: unknown stack \'$5\'" >&2\n'
         '  exit 2\n'
         'fi\n'
+        'if [[ "$6" != "ghcr.io/bjoernhoefer/ha_satellite@${DIGEST}" ]]; then\n'
+        '  echo "ha-deploy: image must be ghcr.io/bjoernhoefer/ha_satellite@sha256:<digest>" >&2\n'
+        '  exit 2\n'
+        'fi\n'
         'printf "%s\\n" "$@" > "$GITHUB_OUTPUT"\nexit "$DEPLOY_EXIT"\n',
-        IMAGE="ghcr.io/bjoernhoefer/ha_satimage", DIGEST=DIGEST,
+        IMAGE="ghcr.io/bjoernhoefer/ha_satellite", DIGEST=DIGEST,
         DEPLOY_EXIT=str(exit_code),
     )
     assert result.returncode == exit_code
     assert (tmp_path / "output").read_text().splitlines() == [
         "-n", "-u", "bjoern", "/usr/local/bin/ha-deploy", "ha_satellite",
-        f"ghcr.io/bjoernhoefer/ha_satimage@{DIGEST}", SHA,
+        f"ghcr.io/bjoernhoefer/ha_satellite@{DIGEST}", SHA,
     ]
 
 
