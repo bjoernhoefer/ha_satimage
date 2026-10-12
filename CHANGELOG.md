@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] — 2026-10-12
+
+### Fixed
+
+- GitHub Actions deployment retains the host helper's `ha_satellite` stack
+  identifier and concurrency group while deploying the renamed `ha_satimage`
+  image, avoiding the `unknown stack 'ha_satimage'` failure.
+
 ## [1.5.0] — 2026-10-08
 
 ### Added

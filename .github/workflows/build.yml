@@ -79,7 +79,7 @@ jobs:
     runs-on: [self-hosted, linux, ARM64, deploy-satellite]
     permissions: {}
     concurrency:
-      group: deploy-ha_satimage
+      group: deploy-ha_satellite
       cancel-in-progress: false
     timeout-minutes: 20
     steps:
@@ -114,7 +114,7 @@ jobs:
             echo "::error::Invalid image digest"
             exit 1
           fi
-          sudo -n -u bjoern /usr/local/bin/ha-deploy ha_satimage "${IMAGE}@${DIGEST}" "${GITHUB_SHA}"
+          sudo -n -u bjoern /usr/local/bin/ha-deploy ha_satellite "${IMAGE}@${DIGEST}" "${GITHUB_SHA}"
 
   test:
     runs-on: ubuntu-latest
