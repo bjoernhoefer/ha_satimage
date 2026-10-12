@@ -36,7 +36,7 @@ def test_deployment_contract(deploy_job):
     assert deploy_job["runs-on"] == ["self-hosted", "linux", "ARM64", "deploy-satellite"]
     assert deploy_job["permissions"] == {}
     assert deploy_job["concurrency"] == {
-        "group": "deploy-ha_satimage", "cancel-in-progress": False,
+        "group": "deploy-ha_satellite", "cancel-in-progress": False,
     }
     assert deploy_job["timeout-minutes"] == 20
     assert all("uses" not in step for step in deploy_job["steps"])
@@ -111,13 +111,17 @@ def test_invalid_digest_never_calls_sudo(tmp_path, deploy_job, digest):
 def test_digest_deployment_and_failure_propagation(tmp_path, deploy_job, exit_code):
     result = run_step(
         tmp_path, deploy_job["steps"][1], "sudo",
+        'if [[ "$5" != "ha_satellite" ]]; then\n'
+        '  echo "ha-deploy: unknown stack \'$5\'" >&2\n'
+        '  exit 2\n'
+        'fi\n'
         'printf "%s\\n" "$@" > "$GITHUB_OUTPUT"\nexit "$DEPLOY_EXIT"\n',
         IMAGE="ghcr.io/bjoernhoefer/ha_satimage", DIGEST=DIGEST,
         DEPLOY_EXIT=str(exit_code),
     )
     assert result.returncode == exit_code
     assert (tmp_path / "output").read_text().splitlines() == [
-        "-n", "-u", "bjoern", "/usr/local/bin/ha-deploy", "ha_satimage",
+        "-n", "-u", "bjoern", "/usr/local/bin/ha-deploy", "ha_satellite",
         f"ghcr.io/bjoernhoefer/ha_satimage@{DIGEST}", SHA,
     ]
 

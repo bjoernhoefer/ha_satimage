@@ -89,6 +89,14 @@ Before deployment it checks the current `main` SHA and skips superseded
 builds. Deployments are serialized and use the validated, immutable image
 digest from the build job.
 
+The host deployment stack identifier remains `ha_satellite`, as registered
+in the separately installed `ha-deploy` helper; it is not the image or
+Compose service name. The workflow retains the `deploy-ha_satellite`
+concurrency group and passes this stack identifier with the renamed
+`ghcr.io/bjoernhoefer/ha_satimage` image digest. Host-side image allowlists,
+Compose service names and `.env` settings must support the renamed image
+and service; changing the workflow does not update that host configuration.
+
 The host-installed `ha-deploy` script pulls that digest, tags it locally
 as `:latest` and runs `docker compose up -d --no-build --pull never --wait`
 for `ha_satimage` only. It holds a host-wide `flock` lock; a failed health
