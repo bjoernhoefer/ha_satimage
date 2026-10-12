@@ -92,16 +92,20 @@ digest from the build job.
 The host deployment stack identifier remains `ha_satellite`, as registered
 in the separately installed `ha-deploy` helper; it is not the image or
 Compose service name. The workflow retains the `deploy-ha_satellite`
-concurrency group and passes this stack identifier with the renamed
-`ghcr.io/bjoernhoefer/ha_satimage` image digest. Host-side image allowlists,
-Compose service names and `.env` settings must support the renamed image
-and service; changing the workflow does not update that host configuration.
+concurrency group and passes this stack identifier with the legacy
+`ghcr.io/bjoernhoefer/ha_satellite` image digest required by the helper's
+image allowlist. The build publishes the same image and digest under both
+`ha_satimage` and `ha_satellite`; normal pulls continue to use `ha_satimage`.
+Changing the workflow does not update the separately managed host Compose
+files or `.env` settings.
 
 The host-installed `ha-deploy` script pulls that digest, tags it locally
 as `:latest` and runs `docker compose up -d --no-build --pull never --wait`
-for `ha_satimage` only. It holds a host-wide `flock` lock; a failed health
-check rolls back to the previous image and exits nonzero. The CD host must
-use `HA_SATIMAGE_TAG=latest` (the default). Compose explicitly sets
+for the host-configured service only. It holds a host-wide `flock` lock; a
+failed health check rolls back to the previous image and exits nonzero.
+The host Compose image must match the helper's locally tagged
+`ghcr.io/bjoernhoefer/ha_satellite:latest`; the repository Compose file
+continues to use `ha_satimage` for manual installations. Compose explicitly sets
 `com.centurylinklabs.watchtower.enable=false`, including protection from a
 host-wide Watchtower instance.
 

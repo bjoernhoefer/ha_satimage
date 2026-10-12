@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.2] — 2026-10-12
+
+### Fixed
+
+- GitHub Actions publishes the same image under the legacy `ha_satellite`
+  name and deploys that digest to satisfy the host helper's image allowlist,
+  while retaining `ha_satimage` for normal image pulls.
+
 ## [1.5.1] — 2026-10-12
 
 ### Fixed
