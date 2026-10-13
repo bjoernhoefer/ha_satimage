@@ -351,7 +351,7 @@ docker compose up -d
 
 - Semantic version in `src/ha_satimage/__init__.py` (`__version__`) and
   `pyproject.toml`; both must match (`tests/test_version.py`). Current:
-  **1.6.0**.
+  **1.7.0**.
 - Shown in the web UI footer and returned by `GET /api/version`.
 - Releases are git tags `vX.Y.Z`; CI builds them into the image tags
   `X.Y.Z`, `X.Y` and `latest`.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ha_satimage"
-version = "1.6.0"
+version = "1.7.0"
 description = "EUMETSAT satellite images as camera entities for Home Assistant"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -51,5 +51,6 @@ ha_satimage = ["templates/*.html", "static/*.svg", "satpy_config/composites/*.ya
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
+    "keep_folded: UI test that keeps the collapsible page sections closed",
     "ui: browser click tests of the web UI (require the [ui] extra and Chromium)",
 ]
