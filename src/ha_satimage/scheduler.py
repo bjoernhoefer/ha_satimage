@@ -20,6 +20,11 @@ Uses APScheduler with its own thread pool so the FastAPI web server
   show a black "Currently unavailable due to maintenance" frame instead.
   Once per hour the source is still queried to verify it is really down;
   if it delivers a new capture, the window is ended early for that source.
+- **Archive** ("download all sources") renders every region in every image
+  type after a new capture. It runs in its own single-thread executor, at
+  most one queued run per source, and yields the render lock to waiting
+  preview renders after every image - the preview of the regions never
+  waits for a long archive run.
 - After each new frame, thumbnail, JPEG and animations are pre-generated
   (``media.prewarm``) so playback starts immediately.
 
@@ -40,13 +45,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from ha_satimage import media
 from ha_satimage.archive import get_render_archive, region_signature
 from ha_satimage.buffer import BufferManager
 from ha_satimage.config import (
-    DEFAULT_FCI_COLLECTION,
     DOWNLOAD_DRIVERS,
     AppConfig,
     ConfigStore,
@@ -81,6 +86,9 @@ DOWNLOAD_JOB_PREFIX = "download-"
 MEDIA_JOB_PREFIX = "media-"
 ARCHIVE_JOB_PREFIX = "archive-"
 SYNC_JOB_ID = "source-sync"
+# Archive renders run in their own executor so they never occupy the
+# threads of the preview renders and downloads.
+ARCHIVE_EXECUTOR = "archive"
 # Download (~100 MB) + rendering one region stays well below this.
 LOCK_TIMEOUT_SECONDS = 15 * 60
 # Download jobs check at this interval whether they are due (no network).
@@ -147,7 +155,15 @@ class RenderScheduler:
         self._source_sync = source_sync
         self._maintenance = maintenance
         self._render_lock = threading.Lock()
-        self._scheduler = BackgroundScheduler()
+        # Preview renders waiting for the render lock (archive renders yield).
+        self._preview_waiting = 0
+        self._preview_lock = threading.Lock()
+        # Sources with an archive run queued but not started yet.
+        self._archive_queued: set[str] = set()
+        self._scheduler = BackgroundScheduler(executors={
+            "default": ThreadPoolExecutor(10),
+            ARCHIVE_EXECUTOR: ThreadPoolExecutor(1),
+        })
         # Region -> settings at the last setup (detects changes).
         self._signatures: dict[str, tuple[int, str]] = {}
         self._downloads: dict[str, DownloadState] = {}
@@ -177,6 +193,18 @@ class RenderScheduler:
             yield
         finally:
             self._render_lock.release()
+
+    def _acquire_for_archive(self, timeout: float) -> bool:
+        """Render lock for one archive image; waiting preview renders go first."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._preview_waiting == 0 and self._render_lock.acquire(timeout=0.5):
+                if self._preview_waiting == 0:
+                    return True
+                self._render_lock.release()
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.2)
 
     # -- Setup ---------------------------------------------------------------
     @staticmethod
@@ -276,19 +304,12 @@ class RenderScheduler:
             )
         if not self._initialized:
             # Upgrades can change overlay signatures without an API save.
-            # Also recover FCI images deleted by older versions from retained raw slots.
-            from ha_satimage.sources.fci_archive import get_archive
-
+            # With "download all sources" missing images are rendered as well
+            # (e.g. FCI raw slots retained over a restart).
             existing = get_render_archive(render_archive_root(config))
-            raw = get_archive(archive_root(config))
-            recover_raw = any(
-                entry.enabled and entry.driver == "mtg_fci"
-                and raw.slots(entry.collection or DEFAULT_FCI_COLLECTION)
-                for entry in config.sources.catalog
-            )
             refresh = {
                 region.name for region in config.regions
-                if region.name in existing.regions() or config.archive.render_all or recover_raw
+                if region.name in existing.regions() or config.archive.render_all
             }
             if refresh:
                 self.refresh_archived_regions(refresh)
@@ -551,12 +572,31 @@ class RenderScheduler:
 
     # -- Archive ("download all sources") --------------------------------------
     def _queue_archive(self, source_id: str, sensing: datetime) -> None:
+        """Queue an archive run; one pending run per source is enough.
+
+        A queued run renders the newest capture (FCI: every raw slot still
+        missing), so further triggers before it started add nothing.
+        """
+        with self._download_lock:
+            if source_id in self._archive_queued:
+                logger.debug("Archive %s: run already queued", source_id)
+                return
+            self._archive_queued.add(source_id)
         self._scheduler.add_job(
-            self.archive_capture,
+            self._run_queued_archive,
             args=[source_id, sensing],
             id=f"{ARCHIVE_JOB_PREFIX}{source_id}-{next(self._job_counter)}",
+            executor=ARCHIVE_EXECUTOR,
             misfire_grace_time=None,
         )
+
+    def _run_queued_archive(self, source_id: str, sensing: datetime) -> int:
+        with self._download_lock:
+            self._archive_queued.discard(source_id)
+        state = self._downloads.get(source_id)
+        if state is not None and state.last_sensing is not None and state.last_sensing > sensing:
+            sensing = state.last_sensing
+        return self.archive_capture(source_id, sensing)
 
     def archive_sources(self, config: AppConfig) -> list[str]:
         """Enabled sources that are archived (all image types per region)."""
@@ -573,41 +613,40 @@ class RenderScheduler:
                 self._archive_source,
                 args=[source_id, sensing],
                 id=f"{ARCHIVE_JOB_PREFIX}manual-{source_id}-{next(self._job_counter)}",
+                executor=ARCHIVE_EXECUTOR,
                 misfire_grace_time=None,
             )
         logger.info("Archive run requested for %s", ", ".join(sources) or "no source")
         return len(sources)
 
     def refresh_archived_regions(self, region_names: set[str]) -> None:
-        """Re-render cached archive images after a region's borders changed."""
+        """Update archived images after a region's cut-out or borders changed."""
         self._scheduler.add_job(
             self._refresh_archived_regions,
             args=[region_names],
             id=f"{ARCHIVE_JOB_PREFIX}borders-{next(self._job_counter)}",
+            executor=ARCHIVE_EXECUTOR,
             misfire_grace_time=None,
         )
 
     def _refresh_archived_regions(self, region_names: set[str]) -> None:
+        """Sync overlays in place; with "download all sources" fill the gaps.
+
+        Without ``archive.render_all`` nothing is rendered - the archive only
+        holds images created right after a download.
+        """
         config = self._config_store.get()
         archive = get_render_archive(render_archive_root(config))
-        sources: set[str] = set()
         regions = {region.name: region for region in config.regions}
-        if config.archive.render_all:
-            sources.update(self.archive_sources(config))
-        from ha_satimage.sources.fci_archive import get_archive
-
-        raw = get_archive(archive_root(config))
-        for entry in config.sources.catalog:
-            if entry.enabled and entry.driver == "mtg_fci" and raw.slots(entry.collection or DEFAULT_FCI_COLLECTION):
-                sources.add(entry.id)
         with self.exclusive(timeout=LOCK_TIMEOUT_SECONDS):
             for name in region_names:
                 region = regions.get(name)
                 if region is None:
                     continue
-                sources.update(archive.combinations(name))
                 archive.sync_region(name, region_signature(region))
-        for source_id in sorted(sources):
+        if not config.archive.render_all:
+            return
+        for source_id in sorted(self.archive_sources(config)):
             state = self._downloads.get(source_id)
             self._archive_source(
                 source_id, state.last_sensing if state else None, allow_disabled=True
@@ -691,7 +730,7 @@ class RenderScheduler:
             for composite in composites:
                 if archive.has(region.name, source_id, composite, sensing):
                     continue
-                if not self._render_lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
+                if not self._acquire_for_archive(LOCK_TIMEOUT_SECONDS):
                     logger.warning("Archive %s: render lock busy, skipping", source_id)
                     return stored
                 started = time.monotonic()
@@ -789,7 +828,7 @@ class RenderScheduler:
                     logger.info("Archive %s: configuration changed, stopping this run", entry.id)
                     break
                 slot, region, composite = task
-                if not self._render_lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
+                if not self._acquire_for_archive(LOCK_TIMEOUT_SECONDS):
                     logger.warning("Archive %s: render lock busy, skipping", entry.id)
                     break
                 started = time.monotonic()
@@ -845,7 +884,14 @@ class RenderScheduler:
         # Checked before taking the lock: may fetch the schedule page.
         window = self._maintenance_window(config, config.sources.get(region.source))
 
-        if not self._render_lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
+        with self._preview_lock:
+            self._preview_waiting += 1
+        try:
+            acquired = self._render_lock.acquire(timeout=LOCK_TIMEOUT_SECONDS)
+        finally:
+            with self._preview_lock:
+                self._preview_waiting -= 1
+        if not acquired:
             logger.warning("Could not acquire render lock, skipping %s this cycle", region_name)
             return
         try:

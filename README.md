@@ -162,13 +162,14 @@ Releases are git tags `vX.Y.Z`; CI builds them into the image tags `X.Y.Z`,
   map", rendered from the latest MSG SEVIRI scan). Moving or removing a
   location resets its image history.
 - **FCI raw-data archive**: while an `mtg_fci` source is active, the raw data
-  (Europe + all regions) is kept for 12 h (configurable). Via the
-  "🛰 FCI archive" button any region — including newly created ones — can
-  be rendered at any archived time in any image type.
+  (Europe + all regions) is kept for 12 h (configurable). With "Download all
+  sources" every region is rendered in every image type right after each
+  download; the "🗄 Archive" viewer shows only these ready-made images
+  (nothing is rendered while browsing).
 - **Border overlay**: country/administrative borders and worldwide coastlines
   (including islands). Enabling borders or upgrading the overlay updates
-  historical archive PNGs and JPEGs without deleting their scans. On startup,
-  missing FCI images are rebuilt from retained raw data. Already deleted scans
+  historical archive PNGs and JPEGs without deleting their scans. On startup
+  with "Download all sources", missing FCI images are rebuilt from retained raw data. Already deleted scans
   without retained raw data cannot be recovered. Moving a location or disabling
   baked-in borders still invalidates its rendered archive.
 - **History**: rolling ring buffer per region under

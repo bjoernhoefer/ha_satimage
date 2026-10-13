@@ -5,12 +5,19 @@ a region, the archive keeps **all combinations**: for every region, every
 enabled source and every image type (composite) of that source's driver one
 image per capture. They are rendered right after a source delivered a new
 capture ("download all sources"), so the archive viewer is as fast as the
-normal viewer - nothing is rendered while browsing.
+normal viewer - nothing is ever rendered while browsing.
 
 Layout (below the frame storage location)::
 
+    _renders/<region>/available.json
     _renders/<region>/<source>/<composite>/<YYYYmmddTHHMMSSZ>.png
                                           /<YYYYmmddTHHMMSSZ>.jpg
+
+``available.json`` is the list of available images of a region. It is
+updated whenever an image is stored, updated or removed, and it is the only
+thing the archive viewer reads - no directory lookups while browsing. A
+missing or unreadable list (e.g. after an upgrade) is rebuilt once from the
+files on disk.
 
 The slot name is the capture time (end of scan), so the same capture is
 rendered only once per combination. Cleanup is by age
@@ -21,7 +28,9 @@ rendered only once per combination. Cleanup is by age
 from __future__ import annotations
 
 import io
+import json
 import logging
+import os
 import re
 import shutil
 import threading
@@ -34,6 +43,7 @@ from ha_satimage.overlay import OVERLAY_VERSION
 logger = logging.getLogger(__name__)
 
 RENDERS_SUBDIR = "_renders"
+INDEX_FILE = "available.json"
 SLOT_FORMAT = "%Y%m%dT%H%M%SZ"
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -78,6 +88,8 @@ class ArchivedImage:
     slot: str
     created_at: datetime
     path: Path
+    version: int | None = None
+    jpeg_version: int | None = None
 
     @property
     def jpeg_path(self) -> Path:
@@ -87,8 +99,8 @@ class ArchivedImage:
         base = (
             f"/regions/{region_name}/archive/{self.source}/{self.composite}/{self.slot}"
         )
-        version = self.path.stat().st_mtime_ns
-        jpeg_version = self.jpeg_path.stat().st_mtime_ns if self.jpeg_path.exists() else version
+        version = self.version or 0
+        jpeg_version = self.jpeg_version
         return {
             "name": self.slot,
             "created_at": self.created_at.isoformat(),
@@ -97,7 +109,7 @@ class ArchivedImage:
             "available": True,
             "cached": True,
             "url": f"{base}.png?v={version}",
-            "jpeg_url": f"{base}.jpg?v={jpeg_version}",
+            "jpeg_url": f"{base}.jpg?v={jpeg_version}" if jpeg_version else f"{base}.png?v={version}",
         }
 
 
@@ -106,7 +118,9 @@ class RenderArchive:
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        # Region -> (file stamp, parsed list): avoids re-parsing per lookup.
+        self._index_cache: dict[str, tuple[tuple[int, int], dict]] = {}
 
     # -- Paths -------------------------------------------------------------
     def dir_for(self, region: str, source: str, composite: str) -> Path | None:
@@ -123,8 +137,12 @@ class RenderArchive:
         return directory / f"{slot}.{ext}"
 
     def has(self, region: str, source: str, composite: str, sensing: datetime) -> bool:
+        """Whether the image is in the list of available images."""
         path = self.path_for(region, source, composite, slot_name(sensing))
-        return path is not None and path.exists()
+        if path is None or not (self.root / region).is_dir():
+            return False
+        slots = self._read_index(region).get(source, {}).get(composite, {})
+        return slot_name(sensing) in slots
 
     # -- Writing -----------------------------------------------------------
     def store(
@@ -145,55 +163,144 @@ class RenderArchive:
             return None
         path.parent.mkdir(parents=True, exist_ok=True)
         self._write_atomic(path, png)
+        jpeg = path.with_suffix(".jpg")
         try:
             from ha_satimage.media import to_jpeg
 
-            self._write_atomic(path.with_suffix(".jpg"), to_jpeg(png, None))
+            self._write_atomic(jpeg, to_jpeg(png, None))
         except Exception:  # pragma: no cover - defensive, PNG stays usable
             logger.exception("Archive: could not create the JPEG for %s", path.name)
+            jpeg.unlink(missing_ok=True)
+        # Listed only once both files are complete.
+        versions = self._versions(path)
+        with self._lock:
+            index = self._read_index(region)
+            index.setdefault(source, {}).setdefault(composite, {})[slot] = versions
+            self._write_index(region, index)
         return ArchivedImage(
-            region, source, composite, slot, slot_time(slot) or sensing, path
+            region, source, composite, slot, slot_time(slot) or sensing, path,
+            versions["png"], versions["jpg"],
         )
 
     @staticmethod
+    def _versions(path: Path) -> dict:
+        jpeg = path.with_suffix(".jpg")
+        return {
+            "png": path.stat().st_mtime_ns,
+            "jpg": jpeg.stat().st_mtime_ns if jpeg.exists() else None,
+        }
+
+    # -- List of available images -------------------------------------------
+    def _index_path(self, region: str) -> Path:
+        return self.root / region / INDEX_FILE
+
+    def _read_index(self, region: str) -> dict:
+        """Source -> composite -> slot -> file versions of the region."""
+        path = self._index_path(region)
+        try:
+            stat = path.stat()
+            stamp = (stat.st_mtime_ns, stat.st_size)
+            cached = self._index_cache.get(region)
+            if cached is not None and cached[0] == stamp:
+                return cached[1]
+            data = json.loads(path.read_text(encoding="utf-8"))
+            images = data["images"]
+            if isinstance(images, dict):
+                self._index_cache[region] = (stamp, images)
+                return images
+            raise TypeError("images is not an object")
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, KeyError, TypeError):
+            logger.warning("Archive %s: list of available images unreadable - rebuilding", region)
+        with self._lock:
+            # A reader must never overwrite a list a writer created meanwhile.
+            return self._rebuild_index(region, only_if_missing=True)
+
+    def _rebuild_index(self, region: str, only_if_missing: bool = False) -> dict:
+        """Build the list from the files on disk (upgrade / repair only)."""
+        base = self.root / region
+        images: dict = {}
+        if not base.is_dir():
+            return images
+        for source_dir in base.iterdir():
+            if not source_dir.is_dir() or not _valid(source_dir.name):
+                continue
+            for composite_dir in source_dir.iterdir():
+                if not composite_dir.is_dir() or not _valid(composite_dir.name):
+                    continue
+                for path in composite_dir.glob("*.png"):
+                    if slot_time(path.stem) is None:
+                        continue
+                    images.setdefault(source_dir.name, {}).setdefault(
+                        composite_dir.name, {}
+                    )[path.stem] = self._versions(path)
+        self._write_index(region, images, only_if_missing)
+        return images
+
+    def _write_index(self, region: str, images: dict, only_if_missing: bool = False) -> None:
+        cleaned = {
+            source: {c: slots for c, slots in composites.items() if slots}
+            for source, composites in images.items()
+        }
+        cleaned = {s: c for s, c in cleaned.items() if c}
+        path = self._index_path(region)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.dumps({"images": cleaned}, sort_keys=True).encode("utf-8")
+        if only_if_missing:
+            partial = self._partial(path)
+            partial.write_bytes(data)
+            try:
+                os.link(partial, path)
+            except FileExistsError:
+                return
+            finally:
+                partial.unlink(missing_ok=True)
+        else:
+            self._write_atomic(path, data)
+        stat = path.stat()
+        self._index_cache[region] = ((stat.st_mtime_ns, stat.st_size), cleaned)
+
+    @staticmethod
+    def _partial(path: Path) -> Path:
+        # Unique per writer: concurrent writers must not share a temp file.
+        return path.with_name(f"{path.name}.{os.getpid()}-{threading.get_ident()}.part")
+
+    @staticmethod
     def _write_atomic(path: Path, data: bytes) -> None:
-        partial = path.with_name(path.name + ".part")
+        partial = RenderArchive._partial(path)
         partial.write_bytes(data)
-        partial.rename(path)
+        os.replace(partial, path)
 
     # -- Reading -----------------------------------------------------------
     def images(self, region: str, source: str, composite: str) -> list[ArchivedImage]:
         """All archived images of the combination, newest first."""
         directory = self.dir_for(region, source, composite)
-        if directory is None or not directory.is_dir():
+        if directory is None or not (self.root / region).is_dir():
             return []
+        slots = self._read_index(region).get(source, {}).get(composite, {})
         images = []
-        for path in directory.iterdir():
-            if path.suffix != ".png":
+        for slot, versions in slots.items():
+            created = slot_time(slot)
+            if created is None or not isinstance(versions, dict):
                 continue
-            created = slot_time(path.stem)
-            if created is not None:
-                images.append(
-                    ArchivedImage(region, source, composite, path.stem, created, path)
-                )
+            images.append(ArchivedImage(
+                region, source, composite, slot, created, directory / f"{slot}.png",
+                versions.get("png"), versions.get("jpg"),
+            ))
         return sorted(images, key=lambda i: i.created_at, reverse=True)
 
     def combinations(self, region: str) -> dict[str, list[str]]:
         """Source ID -> image types with archived images (for the UI)."""
         if not _valid(region):
             return {}
-        base = self.root / region
-        if not base.is_dir():
+        if not (self.root / region).is_dir():
             return {}
         result: dict[str, list[str]] = {}
-        for source_dir in sorted(p for p in base.iterdir() if p.is_dir()):
-            composites = sorted(
-                p.name
-                for p in source_dir.iterdir()
-                if p.is_dir() and any(f.suffix == ".png" for f in p.iterdir())
-            )
-            if composites:
-                result[source_dir.name] = composites
+        for source, composites in sorted(self._read_index(region).items()):
+            names = sorted(name for name, slots in composites.items() if slots)
+            if names:
+                result[source] = names
         return result
 
     def regions(self) -> list[str]:
@@ -268,6 +375,7 @@ class RenderArchive:
                     # so an interrupted upgrade resumes on the next run.
                     self._write_atomic(archived.jpeg_path, to_jpeg(data, None))
                     updated += 1
+        self._rebuild_index(region)
         logger.info("Archive %s: updated borders on %d historical images", region, updated)
 
     def used_bytes(self) -> int:
@@ -276,9 +384,12 @@ class RenderArchive:
         return sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file())
 
     def count(self) -> int:
-        if not self.root.is_dir():
-            return 0
-        return sum(1 for p in self.root.rglob("*.png"))
+        return sum(
+            len(slots)
+            for region in self.regions()
+            for composites in self._read_index(region).values()
+            for slots in composites.values()
+        )
 
     def summary(self) -> dict:
         regions = {}
@@ -316,9 +427,17 @@ class RenderArchive:
             for image in self.images(region, source, composite)
         ]
 
-    def _remove(self, image: ArchivedImage) -> None:
-        image.path.unlink(missing_ok=True)
-        image.jpeg_path.unlink(missing_ok=True)
+    def _remove(self, images: list[ArchivedImage]) -> None:
+        # Unlisted first, so the viewer never offers a file being deleted.
+        for region in {image.region for image in images}:
+            index = self._read_index(region)
+            for image in images:
+                if image.region == region:
+                    index.get(image.source, {}).get(image.composite, {}).pop(image.slot, None)
+            self._write_index(region, index)
+        for image in images:
+            image.path.unlink(missing_ok=True)
+            image.jpeg_path.unlink(missing_ok=True)
 
     def prune(self, retention_hours: int, max_storage_mb: float) -> int:
         """Remove images older than the retention time and beyond the limit."""
@@ -326,14 +445,13 @@ class RenderArchive:
             images = self._all_images()
             if not images:
                 return 0
-            removed = 0
             newest = max(i.created_at for i in images)
             cutoff = newest - timedelta(hours=max(retention_hours, 0))
+            doomed: list[ArchivedImage] = []
             keep: list[ArchivedImage] = []
             for image in images:
                 if image.created_at < cutoff:
-                    self._remove(image)
-                    removed += 1
+                    doomed.append(image)
                 else:
                     keep.append(image)
             limit = max_storage_mb * 1024 * 1024
@@ -342,8 +460,10 @@ class RenderArchive:
             while keep and total > limit:
                 oldest = keep.pop(0)
                 total -= self._size(oldest)
-                self._remove(oldest)
-                removed += 1
+                doomed.append(oldest)
+            removed = len(doomed)
+            if doomed:
+                self._remove(doomed)
             self._drop_empty_dirs()
             if removed:
                 logger.info("Archive: removed %d rendered images", removed)
