@@ -204,7 +204,7 @@
         <label for="region-composite-{{ region.name }}">Image type (composite)</label>
         <select id="region-composite-{{ region.name }}" class="region-composite" data-region="{{ region.name }}"
                 data-testid="region-composite-{{ region.name }}">
-          {% set region_composites = composites_by_driver.get(driver_of.get(region.source), composites) %}
+          {% set region_composites = composites_by_source.get(region.source, composites) %}
           {% for name, label in region_composites.items() %}
           <option value="{{ name }}" {% if name == region.composite %}selected{% endif %}>{{ label }}</option>
           {% endfor %}
@@ -572,6 +572,8 @@
     const MAX_LOCATIONS = {{ max_locations | tojson }};
     const COMPOSITES_BY_DRIVER = {{ composites_by_driver | tojson }};
     const DEFAULT_COMPOSITES = {{ default_composites | tojson }};
+    const COMPOSITES_BY_COLLECTION = {{ composites_by_collection | tojson }};
+    const DEFAULT_COMPOSITE_BY_COLLECTION = {{ default_composite_by_collection | tojson }};
 {% raw %}
     "use strict";
     const $ = (sel, root = document) => root.querySelector(sel);
@@ -858,10 +860,22 @@
       const entry = sourcesState.catalog.find((e) => e.id === sourceId);
       return entry ? entry.driver : null;
     }
-    // Image types depend on the satellite (SEVIRI vs. FCI): swap the options on a
-    // source change and reset an unavailable image type to the default.
-    function fillCompositeSelect(select, driver, current) {
-      const list = COMPOSITES_BY_DRIVER[driver] || COMPOSITES_BY_DRIVER.msg_seviri;
+    // Image types depend on the satellite (SEVIRI vs. FCI) and, for FCI, on the
+    // collection (HRFI has only four channels).
+    function compositesOf(sourceId) {
+      const entry = sourcesState.catalog.find((e) => e.id === sourceId);
+      if (!entry) return null;
+      if (entry.driver === "mtg_fci" && COMPOSITES_BY_COLLECTION[entry.collection]) return COMPOSITES_BY_COLLECTION[entry.collection];
+      return COMPOSITES_BY_DRIVER[entry.driver] || null;
+    }
+    function defaultCompositeOf(sourceId) {
+      const entry = sourcesState.catalog.find((e) => e.id === sourceId);
+      if (entry && entry.driver === "mtg_fci" && DEFAULT_COMPOSITE_BY_COLLECTION[entry.collection]) return DEFAULT_COMPOSITE_BY_COLLECTION[entry.collection];
+      return DEFAULT_COMPOSITES[driverOf(sourceId)];
+    }
+    // Swap the options on a source change and reset an unavailable image type to the default.
+    function fillCompositeSelect(select, list, current) {
+      list = list || COMPOSITES_BY_DRIVER.msg_seviri;
       const options = Object.entries(list).map(([name, label]) => el("option", { value: name, text: label, selected: name === current }));
       if (!(current in list)) options.push(el("option", { value: current, text: current, selected: true }));
       select.replaceChildren(...options);
@@ -869,12 +883,11 @@
     document.querySelectorAll("select.region-source").forEach((select) => {
       select.addEventListener("change", () => {
         const region = select.dataset.region;
-        const driver = driverOf(select.value);
         const compositeSelect = byTestId("region-composite-" + region);
         const patch = { source: select.value };
-        const list = COMPOSITES_BY_DRIVER[driver];
-        if (list && !(compositeSelect.value in list)) patch.composite = DEFAULT_COMPOSITES[driver];
-        fillCompositeSelect(compositeSelect, driver, patch.composite || compositeSelect.value);
+        const list = compositesOf(select.value);
+        if (list && !(compositeSelect.value in list)) patch.composite = defaultCompositeOf(select.value);
+        fillCompositeSelect(compositeSelect, list, patch.composite || compositeSelect.value);
         saveRegionPatch(region, patch, patch.composite ? "Source and image type saved" : "Source saved");
       });
     });

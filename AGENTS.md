@@ -245,6 +245,13 @@ row in the 2 km grid; tested against pyproj). Storage:
   (> 6 GB, time limit) and `airmass` (~1.7 GB). SEVIRI names are mapped to
   an FCI counterpart (`FCI_COMPOSITE_ALIASES`); the UI picks a matching
   image type when the source changes.
+- **HRFI** (High Resolution Fast Imagery, `EO:EUM:DAT:0665`) contains only
+  `vis_06`/`nir_22` (~500 m) and `ir_38`/`ir_105` (~1 km): natural color and
+  cloud tops are impossible. Its own list (`config.FCI_HRFI_COMPOSITES`, per
+  collection via `composites_for(driver, collection)`): default Satpy
+  `ir_sandwich_with_night_colorized_ir_clouds`, `ir_sandwich`, `hrv_clouds`,
+  `colorized_ir_clouds`; FDHSI names are mapped
+  (`FCI_HRFI_COMPOSITE_ALIASES`). The archive renders only this list.
 
 ### Locations and the map of Europe (location_change)
 
@@ -351,7 +358,7 @@ docker compose up -d
 
 - Semantic version in `src/ha_satimage/__init__.py` (`__version__`) and
   `pyproject.toml`; both must match (`tests/test_version.py`). Current:
-  **1.7.0**.
+  **1.7.1**.
 - Shown in the web UI footer and returned by `GET /api/version`.
 - Releases are git tags `vX.Y.Z`; CI builds them into the image tags
   `X.Y.Z`, `X.Y` and `latest`.

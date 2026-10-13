@@ -985,6 +985,47 @@ def test_switching_to_fci_offers_fci_composites(ui, live_server):
     expect(select.locator("option", has_text="HRV").first).to_be_attached()
 
 
+def _add_hrfi_source(server):
+    """FCI High Resolution (HRFI) catalog entry, disabled (no downloads in tests)."""
+    config = httpx.get(server.url + "/api/config").json()
+    catalog = [*config["sources"]["catalog"], {
+        "id": "mtg_fci_0665", "driver": "mtg_fci", "label": "FCI HRFI",
+        "collection": "EO:EUM:DAT:0665", "enabled": False,
+    }]
+    response = httpx.post(server.url + "/api/config", json={"sources": {"catalog": catalog}})
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("phone", [False, True])
+def test_switching_to_fci_hrfi_offers_only_hrfi_composites(page, mobile_page, live_server, phone):
+    _add_hrfi_source(live_server)
+    view = mobile_page if phone else page
+    view.goto(live_server.url + "/")
+    select = view.get_by_test_id("region-composite-wien")
+    view.get_by_test_id("region-source-wien").select_option("mtg_fci_0665")
+    expect(view.get_by_test_id("refresh-message-wien")).to_contain_text("Source and image type saved")
+    expect(select).to_have_value("ir_sandwich_with_night_colorized_ir_clouds")
+    values = select.locator("option").evaluate_all("(options) => options.map((o) => o.value)")
+    assert set(values) == {
+        "ir_sandwich_with_night_colorized_ir_clouds", "ir_sandwich", "hrv_clouds", "colorized_ir_clouds",
+    }
+    region = {r["name"]: r for r in _stored(live_server)["regions"]}["wien"]
+    assert (region["source"], region["composite"]) == (
+        "mtg_fci_0665", "ir_sandwich_with_night_colorized_ir_clouds",
+    )
+
+    # After a reload the server-side list is the same.
+    view.reload()
+    select = view.get_by_test_id("region-composite-wien")
+    expect(select).to_have_value("ir_sandwich_with_night_colorized_ir_clouds")
+    expect(select.locator("option")).to_have_count(4)
+
+    # Back to the normal FCI collection: natural color is offered again.
+    view.get_by_test_id("region-source-wien").select_option("mtg_fci")
+    expect(select).to_have_value("natural_color_with_night_cloudtop")
+    expect(select.locator("option[value='natural_color']")).to_have_count(1)
+
+
 def _archive_images(live_server, region="wien", source="dummy",
                     composite="cloudtop", colors=("red", "green")):
     """Put pre-rendered images into the archive (as the scheduler would)."""

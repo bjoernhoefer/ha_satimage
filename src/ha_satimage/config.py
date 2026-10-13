@@ -75,17 +75,44 @@ FCI_COMPOSITE_ALIASES: dict[str, str] = {
 
 COMPOSITES_BY_DRIVER: dict[str, dict[str, str]] = {"mtg_fci": FCI_COMPOSITES}
 
+# MTG FCI High Resolution Fast Imagery (HRFI): only four channels (vis_06 and
+# nir_22 at ~500 m, ir_38 and ir_105 at ~1 km). Natural color and cloud tops
+# need channels that only the normal resolution product (FDHSI) contains.
+FCI_HRFI_COLLECTION = "EO:EUM:DAT:0665"
+DEFAULT_FCI_HRFI_COMPOSITE = "ir_sandwich_with_night_colorized_ir_clouds"
+FCI_HRFI_COMPOSITES: dict[str, str] = {
+    DEFAULT_FCI_HRFI_COMPOSITE: "IR sandwich (~500 m), colorized IR at night – best quality",
+    "ir_sandwich": "IR sandwich: visible ~500 m + colorized cold clouds (daytime)",
+    "hrv_clouds": "High-resolution clouds (~500 m, daytime)",
+    "colorized_ir_clouds": "Colorized IR clouds (~1 km, day and night)",
+}
+# FDHSI image types mapped to an HRFI counterpart.
+FCI_HRFI_COMPOSITE_ALIASES: dict[str, str] = {
+    DEFAULT_FCI_COMPOSITE: DEFAULT_FCI_HRFI_COMPOSITE,
+    "natural_color": "ir_sandwich",
+    "cloudtop": "colorized_ir_clouds",
+}
+COMPOSITES_BY_COLLECTION: dict[str, dict[str, str]] = {FCI_HRFI_COLLECTION: FCI_HRFI_COMPOSITES}
+DEFAULT_COMPOSITE_BY_COLLECTION: dict[str, str] = {FCI_HRFI_COLLECTION: DEFAULT_FCI_HRFI_COMPOSITE}
 
-def composites_for(driver: str | None) -> dict[str, str]:
+
+def composites_for(driver: str | None, collection: str | None = None) -> dict[str, str]:
+    if driver == "mtg_fci" and collection in COMPOSITES_BY_COLLECTION:
+        return COMPOSITES_BY_COLLECTION[collection]
     return COMPOSITES_BY_DRIVER.get(driver or "", COMPOSITES)
 
 
-def default_composite_for(driver: str | None) -> str:
+def default_composite_for(driver: str | None, collection: str | None = None) -> str:
+    if driver == "mtg_fci" and collection in DEFAULT_COMPOSITE_BY_COLLECTION:
+        return DEFAULT_COMPOSITE_BY_COLLECTION[collection]
     return DEFAULT_FCI_COMPOSITE if driver == "mtg_fci" else DEFAULT_COMPOSITE
 
 
-def resolve_fci_composite(name: str) -> str:
-    return FCI_COMPOSITE_ALIASES.get(name, name)
+def resolve_fci_composite(name: str, collection: str | None = None) -> str:
+    name = FCI_COMPOSITE_ALIASES.get(name, name)
+    if collection == FCI_HRFI_COLLECTION:
+        name = FCI_HRFI_COMPOSITE_ALIASES.get(name, name)
+    return name
 
 
 # Drivers that do not deliver real images yet (placeholder frames).
@@ -106,6 +133,7 @@ COLLECTION_CYCLES: dict[str, int] = {
     "EO:EUM:DAT:MSG:HRSEVIRI": 15,
     "EO:EUM:DAT:MSG:HRSEVIRI-IODC": 15,
     DEFAULT_FCI_COLLECTION: 10,
+    FCI_HRFI_COLLECTION: 10,
 }
 DRIVER_CYCLES: dict[str, int] = {"msg_seviri": 15, "mtg_fci": 10}
 # Drivers that download products themselves (own download job per source).

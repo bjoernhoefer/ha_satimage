@@ -835,7 +835,7 @@ class RenderScheduler:
                 try:
                     if archive.has(region.name, entry.id, composite, slot.archive_time):
                         continue  # rendered on request meanwhile; finally releases the lock
-                    rendered = render_fci_slot(slot, region, composite)
+                    rendered = render_fci_slot(slot, region, composite, collection)
                     if self._config_store.get() is not config:
                         break
                     # Named after the raw slot, so the viewer finds it as pre-rendered.

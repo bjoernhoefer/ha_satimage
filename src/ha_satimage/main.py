@@ -27,6 +27,8 @@ from ha_satimage.archive import RenderArchive, get_render_archive
 from ha_satimage.buffer import BufferManager
 from ha_satimage.config import (
     COMPOSITES,
+    COMPOSITES_BY_COLLECTION,
+    DEFAULT_COMPOSITE_BY_COLLECTION,
     PLACEHOLDER_DRIVERS,
     VALID_DRIVERS,
     AppConfig,
@@ -130,6 +132,11 @@ async def index(request: Request):
             "composites": COMPOSITES,
             "composites_by_driver": {d: composites_for(d) for d in VALID_DRIVERS},
             "default_composites": {d: default_composite_for(d) for d in VALID_DRIVERS},
+            "composites_by_collection": COMPOSITES_BY_COLLECTION,
+            "default_composite_by_collection": DEFAULT_COMPOSITE_BY_COLLECTION,
+            "composites_by_source": {
+                e.id: composites_for(e.driver, e.collection) for e in config.sources.catalog
+            },
             "driver_of": {e.id: e.driver for e in config.sources.catalog},
             "placeholder_drivers": PLACEHOLDER_DRIVERS,
             "max_locations": location_change.MAX_LOCATIONS,
@@ -417,7 +424,7 @@ def _archive_sources(config: AppConfig, region_name: str) -> list[dict]:
     stored = _render_archive(config).combinations(region_name)
     result: list[dict] = []
     for entry in config.sources.catalog:
-        composites = dict(composites_for(entry.driver))
+        composites = dict(composites_for(entry.driver, entry.collection))
         for name in stored.get(entry.id, []):
             composites.setdefault(name, name)
         has_data = entry.id in stored
@@ -438,11 +445,13 @@ def _archive_sources(config: AppConfig, region_name: str) -> list[dict]:
 def _default_archive_composite(config: AppConfig, region, entry) -> str:
     if entry is not None and entry.id == region.source:
         return (
-            resolve_fci_composite(region.composite)
+            resolve_fci_composite(region.composite, entry.collection)
             if entry.driver == "mtg_fci"
             else region.composite
         )
-    return default_composite_for(entry.driver if entry else None)
+    if entry is None:
+        return default_composite_for(None)
+    return default_composite_for(entry.driver, entry.collection)
 
 
 @app.get("/regions/{region_name}/archive/{source}/{composite}/{slot_name}.{ext}")

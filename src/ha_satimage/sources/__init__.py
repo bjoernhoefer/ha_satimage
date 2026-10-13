@@ -209,7 +209,7 @@ def render_with(
     from ha_satimage.config import resolve_fci_composite
 
     if entry.driver == "mtg_fci":
-        composite = resolve_fci_composite(composite)
+        composite = resolve_fci_composite(composite, entry.collection)
     variant = region.model_copy(update={"source": entry.id, "composite": composite})
     return get_source(entry.driver).render(variant, config, None)
 
@@ -218,9 +218,9 @@ def archive_composites(entry: "SourceDefinition") -> list[str]:
     """Image types archived for a source (all choices of its driver)."""
     from ha_satimage.config import composites_for, resolve_fci_composite
 
-    names = list(composites_for(entry.driver))
+    names = list(composites_for(entry.driver, entry.collection))
     if entry.driver == "mtg_fci":
-        names = list(dict.fromkeys(resolve_fci_composite(n) for n in names))
+        names = list(dict.fromkeys(resolve_fci_composite(n, entry.collection) for n in names))
     return names
 
 
@@ -240,7 +240,9 @@ def render_archive_root(config: AppConfig) -> Path:
     return frames_root(config) / RENDERS_SUBDIR
 
 
-def render_fci_slot(slot, region: RegionConfig, composite: str) -> RenderedFrame:
+def render_fci_slot(
+    slot, region: RegionConfig, composite: str, collection: str | None = None
+) -> RenderedFrame:
     """Renders a region from an archived FCI slot."""
     from ha_satimage.config import resolve_fci_composite
     from ha_satimage.sources.fci_archive import chunks_for_region, format_chunks
@@ -263,7 +265,7 @@ def render_fci_slot(slot, region: RegionConfig, composite: str) -> RenderedFrame
     request = RenderRequest(
         reader="fci_l1c_nc",
         filenames=tuple(str(files[c]) for c in sorted(needed)),
-        composite=resolve_fci_composite(composite),
+        composite=resolve_fci_composite(composite, collection),
         lat=region.lat,
         lon=region.lon,
         radius_km=region.radius_km,
@@ -327,7 +329,7 @@ class MtgFciSource(Source):
         ) or sync_fci_archive(config, collection)
         if last_sensing is not None and slot.sensing_end <= last_sensing:
             raise NoNewData(f"{slot.product_id} already rendered")
-        return render_fci_slot(slot, region, region.composite)
+        return render_fci_slot(slot, region, region.composite, collection)
 
 
 SOURCE_REGISTRY: dict[str, type[Source]] = {

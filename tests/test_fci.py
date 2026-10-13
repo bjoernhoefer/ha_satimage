@@ -297,6 +297,47 @@ def test_fci_is_no_placeholder_and_has_own_composites():
     assert default_composite_for("msg_seviri") == "natural_color_hrv_with_night_ir"
 
 
+def test_fci_hrfi_collection_has_own_composites(tmp_path, monkeypatch):
+    """HRFI (EO:EUM:DAT:0665) has only vis_06/nir_22/ir_38/ir_105: no natural color/cloud tops."""
+    from ha_satimage.config import (
+        DEFAULT_FCI_HRFI_COMPOSITE,
+        FCI_HRFI_COLLECTION,
+        SourceDefinition,
+        composites_for,
+        default_composite_for,
+        resolve_fci_composite,
+    )
+    from ha_satimage.sources import archive_composites
+
+    hrfi = composites_for("mtg_fci", FCI_HRFI_COLLECTION)
+    assert DEFAULT_FCI_HRFI_COMPOSITE in hrfi
+    assert {"natural_color", "cloudtop", DEFAULT_FCI_COMPOSITE}.isdisjoint(hrfi)
+    assert default_composite_for("mtg_fci", FCI_HRFI_COLLECTION) == DEFAULT_FCI_HRFI_COMPOSITE
+    assert default_composite_for("mtg_fci", COLLECTION) == DEFAULT_FCI_COMPOSITE
+    assert composites_for("mtg_fci", COLLECTION) == composites_for("mtg_fci")
+    for name in ("natural_color_hrv_with_night_ir", DEFAULT_FCI_COMPOSITE, "natural_color", "cloudtop"):
+        assert resolve_fci_composite(name, FCI_HRFI_COLLECTION) in hrfi
+    assert resolve_fci_composite("cloudtop", COLLECTION) == "cloudtop"
+
+    entry = SourceDefinition(id="mtg_fci_0665", driver="mtg_fci", collection=FCI_HRFI_COLLECTION)
+    assert archive_composites(entry) == list(hrfi)
+
+    # Rendering maps an FDHSI image type to its HRFI counterpart.
+    install_fake_eumdac(monkeypatch, [FakeFciProduct("FCI-A", SENSING)])
+    requests = []
+
+    def fake_render(request):
+        requests.append(request)
+        return b"PNG", SENSING.replace(tzinfo=None)
+
+    monkeypatch.setattr("ha_satimage.sources.satpy_render.render_in_subprocess", fake_render)
+    slot = FciArchive(tmp_path).sync(COLLECTION, CREDS, {36, 37}, 12)
+    render_fci_slot(slot, _region(), DEFAULT_FCI_COMPOSITE, FCI_HRFI_COLLECTION)
+    assert requests[-1].composite == DEFAULT_FCI_HRFI_COMPOSITE
+    render_fci_slot(slot, _region(), DEFAULT_FCI_COMPOSITE)
+    assert requests[-1].composite == DEFAULT_FCI_COMPOSITE
+
+
 def test_fci_composite_is_registered_in_satpy_config():
     pytest.importorskip("satpy")
     from ha_satimage.sources.satpy_render import SATPY_CONFIG_DIR
@@ -508,7 +549,7 @@ def test_archive_run_prerenders_every_archived_fci_slot(tmp_path, monkeypatch, m
 
     calls = []
 
-    def fake_render(slot, region, composite):
+    def fake_render(slot, region, composite, collection=None):
         calls.append((slot.name, region.name, composite))
         if composite == "cloudtop" and slot.name == names[2]:
             raise RenderError("broken slot")
@@ -582,7 +623,7 @@ def test_startup_renders_retained_fci_slots_only_with_render_all(tmp_path, monke
         write_fci_slot(frames, name)
     calls = []
 
-    def fake_render(slot, region, composite):
+    def fake_render(slot, region, composite, collection=None):
         calls.append((slot.name, region.name, composite))
         return RenderedFrame(_tiny_png(), slot.sensing_end)
 

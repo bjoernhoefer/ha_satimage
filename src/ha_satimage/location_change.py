@@ -319,7 +319,7 @@ def add_location(config: AppConfig, payload: dict) -> AppConfig:
         name=name,
         **_position(payload),
         source=source,
-        composite=default_composite_for(entry.driver),
+        composite=default_composite_for(entry.driver, entry.collection),
         borders=bool(payload.get("borders", True)),
     )
     return config.model_copy(update={"regions": [*config.regions, region]})

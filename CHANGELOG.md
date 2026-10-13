@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.7.1] — 2026-10-13
+
+### Fixed
+
+- MTG FCI High Resolution (HRFI, `EO:EUM:DAT:0665`): only image types that
+  can be made from its four channels are offered and archived (IR sandwich
+  with colorized IR at night as default, IR sandwich, HRV clouds, colorized IR
+  clouds). Previously the archive tried natural color and cloud tops for every
+  slot and logged "Composite … is not available for fci_l1c_nc" errors.
+
 ## [1.7.0] — 2026-10-13
 
 ### Changed
