@@ -30,6 +30,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import re
 import shutil
 import threading
@@ -213,9 +214,10 @@ class RenderArchive:
         except (OSError, ValueError, KeyError, TypeError):
             logger.warning("Archive %s: list of available images unreadable - rebuilding", region)
         with self._lock:
-            return self._rebuild_index(region)
+            # A reader must never overwrite a list a writer created meanwhile.
+            return self._rebuild_index(region, only_if_missing=True)
 
-    def _rebuild_index(self, region: str) -> dict:
+    def _rebuild_index(self, region: str, only_if_missing: bool = False) -> dict:
         """Build the list from the files on disk (upgrade / repair only)."""
         base = self.root / region
         images: dict = {}
@@ -233,10 +235,10 @@ class RenderArchive:
                     images.setdefault(source_dir.name, {}).setdefault(
                         composite_dir.name, {}
                     )[path.stem] = self._versions(path)
-        self._write_index(region, images)
+        self._write_index(region, images, only_if_missing)
         return images
 
-    def _write_index(self, region: str, images: dict) -> None:
+    def _write_index(self, region: str, images: dict, only_if_missing: bool = False) -> None:
         cleaned = {
             source: {c: slots for c, slots in composites.items() if slots}
             for source, composites in images.items()
@@ -244,15 +246,31 @@ class RenderArchive:
         cleaned = {s: c for s, c in cleaned.items() if c}
         path = self._index_path(region)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_atomic(path, json.dumps({"images": cleaned}, sort_keys=True).encode("utf-8"))
+        data = json.dumps({"images": cleaned}, sort_keys=True).encode("utf-8")
+        if only_if_missing:
+            partial = self._partial(path)
+            partial.write_bytes(data)
+            try:
+                os.link(partial, path)
+            except FileExistsError:
+                return
+            finally:
+                partial.unlink(missing_ok=True)
+        else:
+            self._write_atomic(path, data)
         stat = path.stat()
         self._index_cache[region] = ((stat.st_mtime_ns, stat.st_size), cleaned)
 
     @staticmethod
+    def _partial(path: Path) -> Path:
+        # Unique per writer: concurrent writers must not share a temp file.
+        return path.with_name(f"{path.name}.{os.getpid()}-{threading.get_ident()}.part")
+
+    @staticmethod
     def _write_atomic(path: Path, data: bytes) -> None:
-        partial = path.with_name(path.name + ".part")
+        partial = RenderArchive._partial(path)
         partial.write_bytes(data)
-        partial.rename(path)
+        os.replace(partial, path)
 
     # -- Reading -----------------------------------------------------------
     def images(self, region: str, source: str, composite: str) -> list[ArchivedImage]:

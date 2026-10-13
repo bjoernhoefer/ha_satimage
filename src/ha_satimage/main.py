@@ -458,7 +458,7 @@ async def archive_image(
         raise HTTPException(status_code=400, detail="Invalid composite name")
     archive = _render_archive(config_store.get())
     path = archive.path_for(region_name, source, composite, slot_name, ext)
-    if path is None:
+    if path is None or not path.resolve().is_relative_to(archive.root.resolve()):
         raise HTTPException(status_code=400, detail="Invalid archive address")
     try:
         payload = await run_in_threadpool(path.read_bytes)
