@@ -1429,12 +1429,14 @@ def test_location_deep_link_opens_editor(page, live_server):
     assert "location=" not in page.url
 
 
-SECTIONS = ["regions", "sources", "storage", "credentials", "status", "logs", "api"]
+SECTIONS = ["sources", "storage", "credentials", "status", "logs", "api"]
 
 
 @pytest.mark.keep_folded
 def test_sections_collapsed_by_default_and_foldable(page, live_server):
     page.goto(live_server.url + "/")
+    expect(page.get_by_test_id("sec-regions").get_by_test_id("location-add")).to_be_visible()
+    expect(page.get_by_test_id("sec-regions-fold")).to_have_count(0)
     for name in SECTIONS:
         fold = page.get_by_test_id(f"sec-{name}-fold")
         expect(fold).not_to_have_attribute("open", "")
