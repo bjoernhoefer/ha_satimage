@@ -155,8 +155,7 @@
   <main>
 
   <section id="sec-regions" data-testid="sec-regions">
-    <details class="fold" data-testid="sec-regions-fold">
-    <summary><h2>Regions <span class="muted" data-testid="location-count">({{ config.regions | length }} of max. {{ max_locations }} locations)</span></h2></summary>
+    <h2>Regions <span class="muted" data-testid="location-count">({{ config.regions | length }} of max. {{ max_locations }} locations)</span></h2>
     <div class="row" style="margin-bottom:0.6rem">
       <button type="button" class="primary" id="location-add" data-testid="location-add" style="margin-top:0"
               {% if config.regions | length >= max_locations %}disabled{% endif %}>+ Add location</button>
@@ -227,7 +226,6 @@
       </div>
       {% endfor %}
     </div>
-    </details>
   </section>
 
   <section id="sec-sources" data-testid="sec-sources">
