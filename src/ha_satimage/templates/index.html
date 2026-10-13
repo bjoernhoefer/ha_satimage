@@ -18,6 +18,9 @@
     nav.toc { max-width: 1100px; margin: 0.4rem auto 0; display: flex; gap: 0.8rem; flex-wrap: wrap; font-size: 0.85rem; }
     nav.toc a { color: #bcd3f5; text-decoration: none; }
     h2 { font-size: 1.1rem; margin: 0 0 0.6rem; }
+    details.fold > summary { cursor: pointer; list-style: revert; }
+    details.fold > summary h2 { display: inline; margin: 0; }
+    details.fold[open] > summary { margin-bottom: 0.6rem; }
     section { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: 1.2rem; }
     label { display: block; margin-top: 0.6rem; font-weight: 600; font-size: 0.92rem; }
     label.inline { display: inline-flex; align-items: center; gap: 0.35rem; font-weight: normal; margin-top: 0.4rem; }
@@ -151,8 +154,9 @@
   </header>
   <main>
 
-  <section id="sec-regions">
-    <h2>Regions <span class="muted" data-testid="location-count">({{ config.regions | length }} of max. {{ max_locations }} locations)</span></h2>
+  <section id="sec-regions" data-testid="sec-regions">
+    <details class="fold" data-testid="sec-regions-fold">
+    <summary><h2>Regions <span class="muted" data-testid="location-count">({{ config.regions | length }} of max. {{ max_locations }} locations)</span></h2></summary>
     <div class="row" style="margin-bottom:0.6rem">
       <button type="button" class="primary" id="location-add" data-testid="location-add" style="margin-top:0"
               {% if config.regions | length >= max_locations %}disabled{% endif %}>+ Add location</button>
@@ -223,10 +227,12 @@
       </div>
       {% endfor %}
     </div>
+    </details>
   </section>
 
-  <section id="sec-sources">
-    <h2>Sources &amp; polling interval</h2>
+  <section id="sec-sources" data-testid="sec-sources">
+    <details class="fold" data-testid="sec-sources-fold">
+    <summary><h2>Sources &amp; polling interval</h2></summary>
     <p class="muted">Only enabled sources are fetched automatically. The source a region uses is selected
       with the region above. Downloads follow the source's scan cycle (Rapid Scan 5 min,
       MTG FCI 10 min, 0° 15 min) as soon as the new scan is available; afterwards the regions using the
@@ -283,10 +289,12 @@
       </div>
       <div class="message" data-testid="sources-json-message" role="status"></div>
     </details>
+    </details>
   </section>
 
-  <section id="sec-storage">
-    <h2>Storage location &amp; history</h2>
+  <section id="sec-storage" data-testid="sec-storage">
+    <details class="fold" data-testid="sec-storage-fold">
+    <summary><h2>Storage location &amp; history</h2></summary>
     <p class="muted">Current: <code data-testid="storage-current">…</code> · used
       <span data-testid="storage-used">…</span> · service runs as <span data-testid="storage-uid">…</span></p>
     <p class="muted">Inside the container only mounted volumes are persistent. <code>docker-compose.yml</code> mounts
@@ -365,10 +373,12 @@
       <button type="submit" class="primary" data-testid="save-storage">Save storage location &amp; history</button>
       <div class="message" data-testid="storage-message" role="status"></div>
     </form>
+    </details>
   </section>
 
-  <section id="sec-credentials">
-    <h2>EUMETSAT credentials</h2>
+  <section id="sec-credentials" data-testid="sec-credentials">
+    <details class="fold" data-testid="sec-credentials-fold">
+    <summary><h2>EUMETSAT credentials</h2></summary>
     <p class="muted">Get a consumer key and secret at
       <a href="https://api.eumetsat.int/api-key/" target="_blank" rel="noopener">api.eumetsat.int/api-key</a>.</p>
     {% if env_overrides %}
@@ -393,10 +403,12 @@
       <button type="submit" data-testid="save-credentials">Save credentials</button>
       <div class="message" data-testid="credentials-message" role="status"></div>
     </form>
+    </details>
   </section>
 
-  <section id="sec-status">
-    <h2>Status</h2>
+  <section id="sec-status" data-testid="sec-status">
+    <details class="fold" data-testid="sec-status-fold">
+    <summary><h2>Status</h2></summary>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Region</th><th>Last run</th><th>Next run</th><th>Frames</th><th>Last error</th></tr></thead>
@@ -413,10 +425,12 @@
         </tbody>
       </table>
     </div>
+    </details>
   </section>
 
-  <section id="sec-logs">
-    <h2>Logs</h2>
+  <section id="sec-logs" data-testid="sec-logs">
+    <details class="fold" data-testid="sec-logs-fold">
+    <summary><h2>Logs</h2></summary>
     <div class="row">
       <label class="inline">Level
         <select data-testid="logs-level" id="logs-level" style="width:auto">
@@ -430,9 +444,11 @@
          data-testid="logs-download">Download</a>
     </div>
     <div class="logs" data-testid="logs" id="logs" aria-live="polite"></div>
+    </details>
   </section>
-  <section id="sec-api">
-    <h2>API links</h2>
+  <section id="sec-api" data-testid="sec-api">
+    <details class="fold" data-testid="sec-api-fold">
+    <summary><h2>API links</h2></summary>
     <p class="muted">All read-only endpoints, clickable (open in a new tab). The addresses
       can be used directly in Home Assistant (e.g. MJPEG camera).</p>
     <label for="api-region">Location</label>
@@ -445,10 +461,25 @@
     <ul class="api-links" data-testid="api-general-links"></ul>
     <h3>Actions (POST, not callable by click)</h3>
     <ul class="api-links" data-testid="api-post-links"></ul>
+    </details>
   </section>
 
     <footer class="muted" style="text-align:center">ha_satimage v{{ version }}</footer>
   </main>
+  <script>
+  (function () {
+    function openFold(hash) {
+      var el = hash && hash.indexOf("#sec-") === 0 ? document.getElementById(hash.slice(1)) : null;
+      var d = el && el.querySelector("details.fold");
+      if (d) d.open = true;
+    }
+    window.addEventListener("hashchange", function () { openFold(location.hash); });
+    document.querySelectorAll("nav a[href^='#sec-']").forEach(function (a) {
+      a.addEventListener("click", function () { openFold(a.getAttribute("href")); });
+    });
+    openFold(location.hash);
+  })();
+  </script>
 
   <div class="viewer" id="viewer" data-testid="viewer" hidden>
     <div class="viewer-stage" id="viewer-stage">

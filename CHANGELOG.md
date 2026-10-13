@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] — 2026-10-13
+
+### Changed
+
+- All page sections of the web UI are foldable and collapsed by default, so
+  the page loads smaller. Navigation links and `#sec-…` deep links open the
+  matching section.
+
 ## [1.5.2] — 2026-10-12
 
 ### Fixed

@@ -28,6 +28,22 @@ expect = playwright_api.expect
 
 pytestmark = pytest.mark.ui
 
+_OPEN_FOLDS = """
+document.addEventListener("DOMContentLoaded", () => {
+  if (!window.__keepFolded)
+    document.querySelectorAll("details.fold").forEach((d) => { d.open = true; });
+});
+"""
+
+
+@pytest.fixture
+def context(context, request):
+    """Page sections are collapsed by default; open them for all tests
+    except those marked with ``keep_folded``."""
+    if not request.node.get_closest_marker("keep_folded"):
+        context.add_init_script(_OPEN_FOLDS)
+    return context
+
 
 @pytest.fixture
 def ui(page, live_server):
@@ -442,6 +458,7 @@ def mobile_page(browser, live_server):
     context = browser.new_context(
         viewport={"width": 390, "height": 844}, device_scale_factor=3, is_mobile=True, has_touch=True
     )
+    context.add_init_script(_OPEN_FOLDS)
     page = context.new_page()
     errors: list[str] = []
     page.on("pageerror", lambda exc: errors.append(str(exc)))
@@ -1417,3 +1434,26 @@ def test_location_deep_link_opens_editor(page, live_server):
     page.get_by_test_id("location-close").click()
     expect(page.get_by_test_id("location-editor")).to_be_hidden()
     assert "location=" not in page.url
+
+
+SECTIONS = ["regions", "sources", "storage", "credentials", "status", "logs", "api"]
+
+
+@pytest.mark.keep_folded
+def test_sections_collapsed_by_default_and_foldable(page, live_server):
+    page.goto(live_server.url + "/")
+    for name in SECTIONS:
+        fold = page.get_by_test_id(f"sec-{name}-fold")
+        expect(fold).not_to_have_attribute("open", "")
+    expect(page.get_by_test_id("credentials-message")).to_be_hidden()
+    page.get_by_test_id("sec-credentials-fold").locator("summary").click()
+    expect(page.get_by_test_id("consumer-key")).to_be_visible()
+    page.get_by_test_id("sec-credentials-fold").locator("summary").click()
+    expect(page.get_by_test_id("consumer-key")).to_be_hidden()
+
+
+@pytest.mark.keep_folded
+def test_sections_deep_link_opens_section(page, live_server):
+    page.goto(live_server.url + "/#sec-api")
+    expect(page.get_by_test_id("sec-api-fold")).to_have_attribute("open", "")
+    expect(page.get_by_test_id("sec-logs-fold")).not_to_have_attribute("open", "")
