@@ -180,7 +180,7 @@ def fci_server(tmp_path, monkeypatch):
             (directory / f"chunk_{chunk:04d}.nc").write_bytes(b"fake chunk")
     calls = []
 
-    def render(slot, region, composite):
+    def render(slot, region, composite, collection=None):
         calls.append((slot.name, region.name, composite))
         image = io.BytesIO()
         Image.new("RGB", (40, 40), "red").save(image, format="PNG")
