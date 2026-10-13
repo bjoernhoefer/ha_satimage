@@ -6,12 +6,10 @@ never contacted.
 
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 import sys
 import types
-from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -345,7 +343,7 @@ def write_fci_slot(frames_dir, name="20260926T142000Z", chunks=range(32, 41), ca
 
 
 def test_archive_api_lists_slots_and_serves_cached_renders(live_server):
-    """The archive lists rendered images and still renders raw FCI slots on request."""
+    """The archive lists only rendered images; raw FCI slots are never rendered on request."""
     frames_dir = live_server.data_dir / "frames"
     write_fci_slot(frames_dir, "20260926T141000Z", chunks=[36])  # Vienna incomplete
     write_fci_slot(frames_dir)
@@ -363,9 +361,13 @@ def test_archive_api_lists_slots_and_serves_cached_renders(live_server):
     listing = httpx.get(f"{live_server.url}/api/regions/wien/archive?source=mtg_fci").json()
     assert listing["source"] == "mtg_fci"
     assert listing["composite"] == DEFAULT_FCI_COMPOSITE
-    # Only the complete slot can be rendered; nothing is cached yet.
-    assert [(s["name"], s["cached"]) for s in listing["images"]] == [("20260926T142000Z", False)]
+    # Nothing rendered yet: raw slots alone are not offered.
+    assert listing["images"] == []
     assert {s["id"] for s in listing["sources"]} >= {"dummy", "mtg_fci"}
+    missing = httpx.get(
+        f"{live_server.url}/regions/wien/archive/mtg_fci/{DEFAULT_FCI_COMPOSITE}/20260926T142000Z.png"
+    )
+    assert missing.status_code == 404
 
     # An already rendered image is served from the archive (without Satpy).
     from ha_satimage.archive import RenderArchive
@@ -394,64 +396,30 @@ def test_archive_api_lists_slots_and_serves_cached_renders(live_server):
     assert "20260926T141000Z" not in names
 
 
-@pytest.mark.parametrize("sensing_end", [
-    "2026-09-26T14:20:00+00:00",
-    "2026-09-26T14:20:00.395",
-    "2026-09-26T16:20:00.395+02:00",
-    "2026-09-26T14:20:37.395+00:00",
-    "2026-09-26T12:20:00+00:00",
-    "2026-09-27T00:20:00+10:00",
-])
-@pytest.mark.parametrize("extension", ["png", "jpg"])
-def test_on_demand_fci_render_is_cached_under_raw_slot_time(tmp_path, monkeypatch, sensing_end, extension):
-    from ha_satimage import main
+def test_archive_never_renders_raw_slots_on_request(fci_server):
+    """Only images in the list of available images are served - no rendering."""
+    from ha_satimage.archive import RenderArchive
 
-    config = _fci_config(tmp_path)
-    frames_dir = tmp_path / "frames"
-    config.storage.frames_dir = str(frames_dir)
-    slot_name = "20260926T142000Z"
-    directory = write_fci_slot(frames_dir, slot_name)
-    metadata = json.loads((directory / "meta.json").read_text())
-    metadata["sensing_end"] = sensing_end
-    (directory / "meta.json").write_text(json.dumps(metadata))
+    url, calls, frames, names = fci_server
+    base = f"{url}/regions/wien/archive/mtg_fci/{DEFAULT_FCI_COMPOSITE}"
+    for ext in ("png", "jpg"):
+        assert httpx.get(f"{base}/{names[0]}.{ext}").status_code == 404
+    listing = httpx.get(f"{url}/api/regions/wien/archive", params={
+        "source": "mtg_fci", "composite": DEFAULT_FCI_COMPOSITE,
+    }).json()
+    assert listing["images"] == []
 
-    calls = []
-
-    def render_with_offset(slot, region, composite):
-        calls.append(slot.name)
-        return RenderedFrame(_tiny_png(), SENSING + timedelta(seconds=37))
-
-    monkeypatch.setattr(main.config_store, "get", lambda: config)
-    monkeypatch.setattr(main.scheduler, "exclusive", lambda timeout: nullcontext())
-    monkeypatch.setattr(main, "render_fci_slot", render_with_offset)
-
-    async def exercise_archive():
-        first = await main.archive_image(
-            "wien", "mtg_fci", DEFAULT_FCI_COMPOSITE, slot_name, extension
-        )
-        from PIL import Image
-
-        assert Image.open(io.BytesIO(first.body)).format == extension.upper().replace("JPG", "JPEG")
-
-        listing = await main.list_archive(
-            "wien", source="mtg_fci", composite=DEFAULT_FCI_COMPOSITE
-        )
-        assert listing["images"][0]["name"] == slot_name
-        assert listing["images"][0]["cached"] is True
-        assert len(listing["images"]) == 1
-
-        # A fresh archive reader (as after restart) must find the same identity.
-        from ha_satimage.archive import RenderArchive
-
-        monkeypatch.setattr(main, "_render_archive", lambda config: RenderArchive(frames_dir / "_renders"))
-        for ext in ("png", "jpg", extension):
-            second = await main.archive_image(
-                "wien", "mtg_fci", DEFAULT_FCI_COMPOSITE, slot_name, ext
-            )
-            assert Image.open(io.BytesIO(second.body)).format == ext.upper().replace("JPG", "JPEG")
-
-    asyncio.run(exercise_archive())
-    assert calls == [slot_name]
+    # The scheduler stores an image after the download: listed and served.
+    slot_time = datetime.strptime(names[0], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    RenderArchive(frames / "_renders").store("wien", "mtg_fci", DEFAULT_FCI_COMPOSITE, slot_time, _tiny_png())
+    listing = httpx.get(f"{url}/api/regions/wien/archive", params={
+        "source": "mtg_fci", "composite": DEFAULT_FCI_COMPOSITE,
+    }).json()
+    assert [(item["name"], item["cached"]) for item in listing["images"]] == [(names[0], True)]
+    for ext in ("png", "jpg"):
+        assert httpx.get(f"{base}/{names[0]}.{ext}").status_code == 200
+    assert httpx.get(f"{base}/{names[1]}.png").status_code == 404
+    assert calls == []
 
 
 def _tiny_png() -> bytes:
@@ -462,48 +430,6 @@ def _tiny_png() -> bytes:
     out = io.BytesIO()
     Image.new("RGB", (8, 8), "red").save(out, format="PNG")
     return out.getvalue()
-
-
-def test_parallel_archive_requests_publish_cache_under_render_lock(fci_server, monkeypatch):
-    from concurrent.futures import ThreadPoolExecutor
-    import shutil
-    import time
-
-    from PIL import Image
-
-    from ha_satimage import main
-    from ha_satimage.archive import RenderArchive
-
-    url, calls, frames, names = fci_server
-    original_store = RenderArchive.store
-
-    def slow_store(self, *args, **kwargs):
-        assert main.scheduler._render_lock.locked(), "cache publication must be serialized with rendering"
-        time.sleep(0.05)
-        return original_store(self, *args, **kwargs)
-
-    monkeypatch.setattr(RenderArchive, "store", slow_store)
-    base = f"{url}/regions/wien/archive/mtg_fci/{DEFAULT_FCI_COMPOSITE}/{names[0]}"
-    extensions = ["png", "jpg"] * 4
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        responses = list(pool.map(lambda ext: httpx.get(f"{base}.{ext}"), extensions))
-    for response, ext in zip(responses, extensions):
-        assert response.status_code == 200, response.text
-        assert Image.open(io.BytesIO(response.content)).format == ("PNG" if ext == "png" else "JPEG")
-    assert len(calls) == 1
-    archive = RenderArchive(frames / "_renders")
-    image = archive.images("wien", "mtg_fci", DEFAULT_FCI_COMPOSITE)[0]
-    image.jpeg_path.unlink()
-    shutil.rmtree(frames / "_archive")
-    # JPEG repair needs neither retained raw data nor a second Satpy render.
-    response = httpx.get(f"{base}.jpg")
-    assert response.status_code == 200
-    assert Image.open(io.BytesIO(response.content)).format == "JPEG"
-    assert len(calls) == 1
-    listing = httpx.get(f"{url}/api/regions/wien/archive", params={
-        "source": "mtg_fci", "composite": DEFAULT_FCI_COMPOSITE,
-    }).json()
-    assert [(item["name"], item["cached"]) for item in listing["images"]] == [(names[0], True)]
 
 
 def test_storage_api_sets_archive_settings_and_prunes(live_server):
@@ -637,7 +563,8 @@ def test_archive_run_for_fci_does_not_run_twice_at_once(tmp_path, monkeypatch):
         assert scheduler.archive_capture("mtg_fci", datetime.now(timezone.utc)) == 0
 
 
-def test_startup_recovers_deleted_images_from_retained_fci_slots(tmp_path, monkeypatch):
+@pytest.mark.parametrize("render_all", [True, False])
+def test_startup_renders_retained_fci_slots_only_with_render_all(tmp_path, monkeypatch, render_all):
     from ha_satimage.archive import RenderArchive
     from ha_satimage.config import ConfigStore
     from ha_satimage.scheduler import RenderScheduler
@@ -646,7 +573,7 @@ def test_startup_recovers_deleted_images_from_retained_fci_slots(tmp_path, monke
 
     store = ConfigStore(tmp_path / "config.yaml")
     config = _fci_config(tmp_path)
-    config.archive.render_all = False
+    config.archive.render_all = render_all
     store.update(config)
     frames = tmp_path / "frames"
     now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
@@ -667,6 +594,10 @@ def test_startup_recovers_deleted_images_from_retained_fci_slots(tmp_path, monke
     scheduler = RenderScheduler(store, BufferManager(frames), StatusStore())
     scheduler._reschedule()
     recovery = [job for job in scheduler._scheduler.get_jobs() if job.id.startswith("archive-borders-")]
+    if not render_all:
+        # No archive: nothing is synced or rendered at startup.
+        assert recovery == [] and calls == []
+        return
     assert len(recovery) == 1
     recovery[0].func(*recovery[0].args)
     composites = archive_composites(store.get().sources.get("mtg_fci"))

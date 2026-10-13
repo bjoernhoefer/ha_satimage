@@ -3,6 +3,27 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] — 2026-10-13
+
+### Changed
+
+- The archive is purely file-based: after a new download, every region is
+  rendered in every image type (PNG and JPEG) and added to the region's list
+  of available images (`_renders/<region>/available.json`). The archive
+  viewer only reads this list; nothing is rendered on request any more (MTG
+  FCI raw scans without rendered images are no longer offered, unlisted
+  images return 404).
+- Without "Download all sources" nothing is rendered into the archive, also
+  not at startup or after border changes (overlays of existing images are
+  still updated in place).
+
+### Fixed
+
+- Gaps of 30 minutes and more in the region previews: archive renders now
+  run in their own executor, at most one queued run per source, and yield
+  the render lock to waiting preview renders after every image, so they no
+  longer block or starve the regular preview renders.
+
 ## [1.5.2] — 2026-10-12
 
 ### Fixed

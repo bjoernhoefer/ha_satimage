@@ -163,8 +163,11 @@ source download at its own cycle — even when no region uses it — and, after
 each new scan, renders **every region in every image type** of that source's
 driver. The images are stored by `archive.py` as PNG **and** JPEG under
 `<storage location>/_renders/<region>/<source>/<composite>/<scan>.png`.
-Browsing is therefore as fast as the normal viewer; nothing is rendered on
-demand. Cleanup by age (`archive.render_retention_hours`, default 24 h) and
+After both files are written the image is added to the region's list of
+available images `_renders/<region>/available.json` (also updated by
+pruning and overlay updates; rebuilt once from disk if missing). The archive
+viewer reads **only** this list — no file lookups, and **nothing is ever
+rendered on request** (an image that is not listed returns 404). Cleanup by age (`archive.render_retention_hours`, default 24 h) and
 by a storage limit (`archive.render_max_storage_mb`, default 2000 MB, oldest
 first); regions that no longer exist are dropped, and a region whose cut-out
 changed (position, radius, size — see `region_signature`) loses its
@@ -172,7 +175,11 @@ archived images because they no longer match. Enabling borders or upgrading
 the overlay updates existing images in place, retaining their scan timestamps.
 
 Rendering runs strictly serialized under the **global render lock**, one
-image at a time (memory!), in the scheduler jobs `archive-<source>`; an
+image at a time (memory!), in the scheduler jobs `archive-<source>`. These
+run in their own single-thread APScheduler executor (`archive`), at most one
+queued run per source (further new scans are covered by it), and yield the
+render lock to waiting preview renders after every image — so the preview
+of the regions never falls behind a long archive run; an
 immediate run over all sources is `POST /api/archive/render` (button
 "Archive all now"). Combinations that already exist are skipped, so a
 restart or a second run costs nothing. For `mtg_fci` an archive run covers
@@ -183,9 +190,10 @@ than enabling "Download all sources") are backfilled; only one such run per
 source at a time, it re-reads the slot list after every image.
 
 The per-region button "🗄 Archive" opens the archive viewer with a source
-and an image type select, JPEG/PNG format selection and time-lapse. MTG FCI
-raw scans that have not been rendered yet are still listed and rendered on
-request (the result lands in the archive).
+and an image type select, JPEG/PNG format selection and time-lapse. Only
+images from the list of available images are shown (raw FCI scans without
+rendered images are not offered). Without "Download all sources" nothing is
+archived.
 
 ### Country border overlay
 
@@ -202,9 +210,9 @@ region — no pycoast/GSHHS needed. Toggling counts like a
 composite change (the frame remembers `borders`) and re-renders immediately.
 Enabling borders updates existing archive PNGs and JPEGs without needing the
 original raw data; overlay upgrades add only missing layers. Disabling baked-in
-borders invalidates the archive and regenerates from available source data.
-At startup, retained FCI raw slots are backfilled even with `render_all` off.
-Already deleted images without retained raw data cannot be recovered.
+borders invalidates the archive and (with `render_all`) regenerates from
+available source data. At startup with `render_all` on, retained FCI raw
+slots without images are rendered. Already deleted images without retained raw data cannot be recovered.
 
 ### MTG FCI and raw-data archive (mtg_fci)
 
@@ -222,15 +230,11 @@ row in the 2 km grid; tested against pyproj). Storage:
 - Downloading starts as soon as an `mtg_fci` catalogue entry is **enabled**
   (own download job `download-<id>` at the 10 min cycle, without the render
   lock — I/O only), regardless of whether a region uses the source.
-- Rendering (scheduled or on demand) only uses the region's chunks: keeps
+- Rendering only uses the region's chunks: keeps
   the child process at ~410–480 MB. With all 9 chunks the peak was
   ~600–640 MB and it was occasionally killed next to the web server.
-- **On-demand rendering:** `GET /regions/{r}/archive/{slot}.png?composite=…`
-  renders any region (also with a SEVIRI source or newly created) from any
-  archived slot, under the global render lock; the PNG is cached in the slot
-  under `renders/` and disappears with it. In the UI: button
-  "🛰 FCI archive" per region (viewer with image type selection, no
-  timelapse, since each image costs ~10–20 s of rendering).
+- There is **no on-demand rendering**: archive images of FCI slots are only
+  created by the archive run after a download ("Download all sources").
 - Reader `fci_l1c_nc` needs `netCDF4` (wheel available for aarch64) and runs
   with the **synchronous** dask scheduler: HDF5 from the wheel is not
   thread-safe; with threads there were SIGSEGVs in ~50 % of runs.
@@ -347,7 +351,7 @@ docker compose up -d
 
 - Semantic version in `src/ha_satimage/__init__.py` (`__version__`) and
   `pyproject.toml`; both must match (`tests/test_version.py`). Current:
-  **1.5.0**.
+  **1.6.0**.
 - Shown in the web UI footer and returned by `GET /api/version`.
 - Releases are git tags `vX.Y.Z`; CI builds them into the image tags
   `X.Y.Z`, `X.Y` and `latest`.
@@ -390,7 +394,7 @@ The UI uses these formats: preview per region = `latest.jpg`; the viewer has
 a format selection (`viewer-format`, remembered in the browser via
 `localStorage`, in the hash as `f=`): history JPEG (default, fast) or PNG
 (original); live MJPEG stream, MP4 video (`<video>`, zoomable) or GIF. The
-FCI archive stays PNG.
+archive offers JPEG and PNG as well.
 
 ## Operating rules
 
@@ -452,7 +456,7 @@ FCI archive stays PNG.
 | `POST /api/storage` | Set storage location/history/archive (`frames_dir`, `move_existing`, `history_minutes`, `max_storage_mb`, `archive_retention_hours`, `archive_chunk_min`, `archive_chunk_max`, `archive_render_all`, `archive_render_retention_hours`, `archive_render_max_storage_mb`) |
 | `GET /api/archive` | Archive: FCI raw data (retention, chunks, slots/usage, last error) and pre-rendered images (`renders`, `render_all`, retention, limit) |
 | `GET /api/regions/{region}/archive` | Archive of a region: sources, image types, images (`?source=&composite=`; `slots` = alias of `images`) |
-| `GET /regions/{region}/archive/{source}/{composite}/{slot}.{png\|jpg}` | Archived image; unrendered FCI raw slots are rendered on request and stored |
+| `GET /regions/{region}/archive/{source}/{composite}/{slot}.{png\|jpg}` | Archived image from the list of available images (never rendered on request; 404 otherwise) |
 | `POST /api/archive/render` | Archive all enabled sources now (all regions, all image types) |
 | `GET /api/logs` | Log entries (`?after=<id>`, `?format=text`) |
 | `GET /live/{region}` | Memorable address: opens the live stream in the browser |

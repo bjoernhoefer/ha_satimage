@@ -154,7 +154,7 @@ def live_server(start_server: Callable[..., LiveServer]) -> LiveServer:
 
 @pytest.fixture
 def fci_server(tmp_path, monkeypatch):
-    """Real HTTP app with retained legacy slots; only the costly renderer is fake."""
+    """Real HTTP app with retained raw FCI slots; only the costly renderer is fake."""
     import uvicorn
     from PIL import Image
 
@@ -188,7 +188,8 @@ def fci_server(tmp_path, monkeypatch):
 
     monkeypatch.setattr(main.config_store, "get", lambda: config)
     monkeypatch.setattr(main, "buffer_manager", BufferManager(frames))
-    monkeypatch.setattr(main, "render_fci_slot", render)
+    # The web app must never render; any render (scheduler only) is recorded.
+    monkeypatch.setattr("ha_satimage.scheduler.render_fci_slot", render)
     server = uvicorn.Server(uvicorn.Config(
         main.app, host="127.0.0.1", port=_free_port(), lifespan="off", log_level="warning",
     ))
