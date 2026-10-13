@@ -206,6 +206,106 @@ def test_summary_reports_images_per_region(tmp_path):
     assert summary["regions"]["wien"]["newest"].startswith("2026-09-26T14:25")
 
 
+def test_available_images_list_is_the_only_lookup(tmp_path):
+    """The viewer reads ``available.json`` - no directory scan per request."""
+    import json
+
+    archive = RenderArchive(tmp_path)
+    archive.store("wien", "dummy", "cloudtop", NOW, png())
+    listed = json.loads((tmp_path / "wien" / "available.json").read_text())["images"]
+    assert set(listed["dummy"]["cloudtop"]) == {"20260926T142000Z"}
+
+    # A stray file that was never completed/listed is not offered.
+    stray = tmp_path / "wien" / "dummy" / "cloudtop" / "20260926T143000Z.png"
+    stray.write_bytes(png())
+    assert [i.slot for i in archive.images("wien", "dummy", "cloudtop")] == ["20260926T142000Z"]
+    assert not archive.has("wien", "dummy", "cloudtop", NOW + timedelta(minutes=10))
+
+    # Pruning removes the entry from the list as well.
+    archive.prune(retention_hours=0, max_storage_mb=0.000001)
+    assert archive.images("wien", "dummy", "cloudtop") == []
+    assert "dummy" not in json.loads((tmp_path / "wien" / "available.json").read_text())["images"]
+
+
+def test_missing_available_images_list_is_rebuilt_from_disk(tmp_path):
+    """Archives of older versions have no list yet: it is built once."""
+    archive = RenderArchive(tmp_path)
+    archive.store("wien", "dummy", "cloudtop", NOW, png())
+    archive.store("wien", "mtg_fci", "airmass", NOW, png())
+    (tmp_path / "wien" / "available.json").unlink()
+    fresh = RenderArchive(tmp_path)
+    assert fresh.combinations("wien") == {"dummy": ["cloudtop"], "mtg_fci": ["airmass"]}
+    assert (tmp_path / "wien" / "available.json").exists()
+    (tmp_path / "wien" / "available.json").write_text("{broken")
+    assert RenderArchive(tmp_path).count() == 2
+
+
+def test_archive_renders_yield_to_waiting_previews(tmp_path):
+    import threading
+    import time
+
+    from ha_satimage.buffer import BufferManager
+    from ha_satimage.config import ConfigStore
+    from ha_satimage.scheduler import RenderScheduler
+    from ha_satimage.status import StatusStore
+
+    scheduler = RenderScheduler(
+        ConfigStore(tmp_path / "config.yaml"), BufferManager(tmp_path / "frames"), StatusStore()
+    )
+    scheduler._preview_waiting = 1
+    started = time.monotonic()
+    assert scheduler._acquire_for_archive(timeout=0.6) is False
+    assert time.monotonic() - started >= 0.5
+    assert not scheduler._render_lock.locked()
+    scheduler._preview_waiting = 0
+    assert scheduler._acquire_for_archive(timeout=1) is True
+    scheduler._render_lock.release()
+
+    # A preview waiting while an archive image renders goes first afterwards.
+    scheduler._render_lock.acquire()
+    scheduler._preview_waiting = 1
+    order = []
+
+    def archive():
+        if scheduler._acquire_for_archive(timeout=5):
+            order.append("archive")
+            scheduler._render_lock.release()
+
+    worker = threading.Thread(target=archive)
+    worker.start()
+    time.sleep(0.3)
+    scheduler._render_lock.release()
+    with scheduler._render_lock:
+        order.append("preview")
+        scheduler._preview_waiting = 0
+    worker.join(timeout=5)
+    assert order == ["preview", "archive"]
+
+
+def test_archive_runs_are_coalesced_per_source(tmp_path):
+    from ha_satimage.buffer import BufferManager
+    from ha_satimage.config import ConfigStore
+    from ha_satimage.scheduler import ARCHIVE_EXECUTOR, RenderScheduler
+    from ha_satimage.status import StatusStore
+
+    scheduler = RenderScheduler(
+        ConfigStore(tmp_path / "config.yaml"), BufferManager(tmp_path / "frames"), StatusStore()
+    )
+    runs = []
+    scheduler.archive_capture = lambda source, sensing: runs.append((source, sensing)) or 0
+    for minutes in (0, 5, 10):
+        scheduler._queue_archive("msg_seviri", NOW + timedelta(minutes=minutes))
+    scheduler._queue_archive("mtg_fci", NOW)
+    jobs = [j for j in scheduler._scheduler.get_jobs() if j.id.startswith("archive-")]
+    assert len(jobs) == 2
+    assert {j.executor for j in jobs} == {ARCHIVE_EXECUTOR}
+    seviri = next(j for j in jobs if "msg_seviri" in j.id)
+    seviri.func(*seviri.args)  # started: a new capture may queue the next run
+    assert runs == [("msg_seviri", NOW)]
+    scheduler._queue_archive("msg_seviri", NOW + timedelta(minutes=15))
+    assert len([j for j in scheduler._scheduler.get_jobs() if "msg_seviri" in j.id]) == 2
+
+
 # --------------------------------------------------------------------------
 # API
 

@@ -791,6 +791,8 @@ def test_toggle_borders_rerenders(ui, live_server):
         httpx.get(f"{live_server.url}/regions/wien/latest.png").content,
     )
     assert original is not None
+    # The archive is only (re-)rendered with "download all sources".
+    assert httpx.post(f"{live_server.url}/api/storage", json={"archive_render_all": True}).status_code == 200
 
     def wait_for_archive_rerender(previous_path) -> None:
         deadline = time.monotonic() + 20
@@ -1060,7 +1062,7 @@ def test_archive_viewer_on_the_phone(mobile_page, live_server):
 
 
 @pytest.mark.parametrize("page_fixture", ["page", "mobile_page"])
-def test_fci_archive_renders_once_when_browsing_and_reopening(request, page_fixture, fci_server):
+def test_fci_archive_shows_only_available_images_without_rendering(request, page_fixture, fci_server):
     from ha_satimage.archive import RenderArchive
     from ha_satimage.config import DEFAULT_FCI_COMPOSITE
 
@@ -1068,6 +1070,9 @@ def test_fci_archive_renders_once_when_browsing_and_reopening(request, page_fixt
     url, calls, frames, names = fci_server
     archive = RenderArchive(frames / "_renders")
     archive.store("wien", "dummy", "cloudtop", datetime(2026, 9, 26, tzinfo=timezone.utc), _png("blue"))
+    # Only the newest raw slot was rendered after its download; the older one was not.
+    newest = datetime.strptime(names[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    archive.store("wien", "mtg_fci", DEFAULT_FCI_COMPOSITE, newest, _png("green"))
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.goto(url + "/")
@@ -1076,32 +1081,20 @@ def test_fci_archive_renders_once_when_browsing_and_reopening(request, page_fixt
     image = page.get_by_test_id("viewer-image")
     expect(image).to_have_attribute("src", re.compile(names[1]))
     _image_loaded(page, "viewer-image")
-    page.get_by_test_id("viewer-prev").click()
-    expect(image).to_have_attribute("src", re.compile(names[0]))
-    _image_loaded(page, "viewer-image")
-    assert len(calls) == 2
-
-    for _ in range(2):
-        page.get_by_test_id("viewer-close").click()
-        page.get_by_test_id("archive-wien").click()
-        page.get_by_test_id("viewer-source").select_option("mtg_fci")
-        for ext in ("jpg", "png"):
-            page.get_by_test_id("viewer-format").select_option(ext)
-            _image_loaded(page, "viewer-image")
-            page.get_by_test_id("viewer-prev").click()
-            _image_loaded(page, "viewer-image")
-            page.get_by_test_id("viewer-next").click()
-            _image_loaded(page, "viewer-image")
-        expect(page.get_by_test_id("viewer-loading")).to_be_hidden()
-    page.reload()  # Deep link restores the same source/composite and cache.
+    expect(page.get_by_test_id("viewer-position")).to_have_text("1 / 1")
+    expect(page.get_by_test_id("viewer-loading")).to_be_hidden()
+    for ext in ("jpg", "png"):
+        page.get_by_test_id("viewer-format").select_option(ext)
+        expect(image).to_have_attribute("src", re.compile(rf"{names[1]}\.{ext}"))
+        _image_loaded(page, "viewer-image")
+    page.reload()  # Deep link restores the same source/composite.
     expect(page.get_by_test_id("viewer-source")).to_have_value("mtg_fci")
     _image_loaded(page, "viewer-image")
     listing = httpx.get(f"{url}/api/regions/wien/archive", params={
         "source": "mtg_fci", "composite": DEFAULT_FCI_COMPOSITE,
     }).json()
-    assert {item["name"] for item in listing["images"]} == set(names)
-    assert all(item["cached"] for item in listing["images"])
-    assert len(calls) == 2
+    assert [item["name"] for item in listing["images"]] == [names[1]]
+    assert calls == []
     assert errors == []
 
 

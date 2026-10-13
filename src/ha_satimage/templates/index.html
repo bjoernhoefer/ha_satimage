@@ -350,8 +350,8 @@
       <h3 style="font-size:1rem;margin-top:1rem">MTG FCI raw data archive</h3>
       <p class="muted">If an MTG FCI source is active, only the stripes (“chunks”, 1 = south …
         40 = north) needed by the range below and all regions are downloaded per scan (Europe ≈ 32–40, ~180 MB per scan)
-        and kept here. Regions and image types can still be rendered from them afterwards
-        (in the archive viewer) – also for newly created regions.</p>
+        and kept here. With “Download all sources” every region and image type is rendered from
+        them right after the download; the archive viewer only shows these ready-made images.</p>
       <p class="muted" data-testid="archive-summary">…</p>
       <div class="grid2">
         <div>
@@ -486,7 +486,7 @@
       <img id="viewer-img" data-testid="viewer-image" alt="" draggable="false">
       <video id="viewer-video" data-testid="viewer-video" muted loop autoplay playsinline hidden></video>
       <div class="viewer-empty" id="viewer-empty" hidden>No images available</div>
-      <div class="viewer-loading" id="viewer-loading" data-testid="viewer-loading" hidden>Rendering from raw data (approx. 10 s) …</div>
+      <div class="viewer-loading" id="viewer-loading" data-testid="viewer-loading" hidden>Loading …</div>
     </div>
     <div class="viewer-bar viewer-top">
       <div class="viewer-title"><span id="viewer-live-badge" class="live-badge" hidden>LIVE</span><span id="viewer-region"></span>
