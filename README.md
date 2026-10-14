@@ -145,7 +145,82 @@ cpus: ${HA_SATIMAGE_CPUS:-1.5}
 pids_limit: ${HA_SATIMAGE_PIDS_LIMIT:-128}
 ```
 
-#### Restore memory-cgroup support before restarting the workload
+#### Pi-side setup/check script (manual administrator access)
+
+The CD job **does run on the Raspberry Pi**, using the
+`[self-hosted, linux, ARM64, deploy-satellite]` runner. However, that runner
+cannot access Docker or change boot/Compose files: it may only invoke the
+host-installed `ha-deploy` helper. The helper performs the rollout and health
+check, not host resource configuration. Do not give the runner unrestricted
+sudo/Docker access to work around this separation.
+
+For one-time host preparation, copy the reviewed
+`scripts/pi_setup.py` from this PR to the Pi and run it as an administrator.
+It requires Python 3 and PyYAML (`sudo apt install python3-yaml` on Raspberry
+Pi OS if missing); it does not require installing the satellite application.
+For example, from your computer, after saving the script locally:
+
+```bash
+scp ./pi_setup.py USER@PI:/tmp/ha-pi-setup.py
+ssh -t USER@PI 'sudo docker inspect -f "{{index .Config.Labels \"com.docker.compose.project.config_files\"}}" ha_satellite'
+```
+
+Use the **absolute host Compose path** from that output below; do not use the
+cloud agent's repository path. The script supports a single Compose file and
+service, and refuses a detected multi-file stack; configure such stacks
+manually. Pause competing automatic deployments before applying or rolling
+out. The default is check-only; it does not pull images, change files or
+start containers:
+
+```bash
+ssh -t USER@PI 'sudo python3 /tmp/ha-pi-setup.py --compose-file /absolute/host/path/docker-compose.yml --service ha_satellite'
+```
+
+An exit code of 1 means a prerequisite/limit is missing; read the `STOP`
+message. Unsupported memory/swap/cgroup settings must be fixed using the
+OS-specific instructions below. The script **never edits boot settings or
+reboots** and currently requires cgroup v2 at `/sys/fs/cgroup`.
+
+Persist the four limits to the actual CD Compose file (confirmation required):
+
+```bash
+ssh -t USER@PI 'sudo python3 /tmp/ha-pi-setup.py --compose-file /absolute/host/path/docker-compose.yml --service ha_satellite --apply'
+```
+
+It validates effective Compose configuration before replacing anything,
+rejects unrelated effective changes, preserves file ownership/permissions
+and saves a private `docker-compose.yml.backup-…` alongside the original.
+YAML comments/formatting are rewritten; environment expressions, mounts,
+image tags and unrelated effective settings are preserved. Matching
+`deploy.resources.limits` entries are updated too. Backups may contain
+credentials: keep them private and never commit them. Repeated application
+with the same settings does not write another backup.
+
+Once host preparation succeeds, merge the PR with green checks; the normal
+`main` pipeline tests, builds/publishes **1.7.2** and deploys via the host
+helper. Do not simultaneously run manual deployment. If CD cannot deploy,
+wait for the image publication and run this single SSH command instead:
+
+```bash
+ssh -t USER@PI 'sudo python3 /tmp/ha-pi-setup.py --compose-file /absolute/host/path/docker-compose.yml --service ha_satellite --apply --rollout --expected-version 1.7.2 --yes'
+```
+
+This pulls the configured image, verifies version and actual kernel limits
+in an isolated probe **before** stopping the service, then recreates it with
+the existing mounts/settings, waits for health and checks its actual cgroup
+limits. If verification after startup fails, it stops the service rather
+than leaving an unsafe workload running; it does not automatically roll
+back to an older unprotected image. It never changes the selected image tag:
+the host must already select `ha_satellite:latest` (or a published 1.7.2
+tag); an old image is refused. For manual repository installations use
+`--service ha_satimage`. `--yes` bypasses confirmation, not safety checks.
+
+After CD, repeat the check-only command to verify actual enforcement. A
+stopped service is reported as awaiting runtime verification, not as proof
+of enforcement. Use the measurements below over multiple scan cycles;
+successful setup/health checks alone do not establish real Pi peak usage.
+
+#### Host memory-cgroup recovery
 
 If Docker says "Your kernel does not support memory limit capabilities …
 Limitation discarded", the configured RAM limit **does not protect the host**.
