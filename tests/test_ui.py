@@ -523,7 +523,11 @@ def test_mobile_viewer_fills_screen_and_back_closes(mobile_page, live_server):
 
 # --- Logs ----------------------------------------------------------------
 
-def test_logs_are_shown_at_the_bottom(ui, live_server):
+@pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
+def test_logs_are_shown_at_the_bottom(request, page_fixture, live_server):
+    ui = request.getfixturevalue(page_fixture)
+    if page_fixture == "mobile_page":
+        ui.goto(live_server.url + "/")
     live_server.ensure_frames("wien", 1)
     last_two = ui.evaluate(
         "() => [...document.querySelectorAll('main > section')].slice(-2).map((s) => s.id)"
