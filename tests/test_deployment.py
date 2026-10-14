@@ -151,3 +151,18 @@ def test_compose_disables_watchtower():
     assert "com.centurylinklabs.watchtower.enable=false" in (
         compose["services"]["ha_satimage"]["labels"]
     )
+
+
+def test_container_resource_limits():
+    service = yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"]["ha_satimage"]
+    assert service["mem_limit"] == "${HA_SATIMAGE_MEM_LIMIT:-768m}"
+    assert service["memswap_limit"] == service["mem_limit"]
+    assert service["cpus"] == "${HA_SATIMAGE_CPUS:-1.5}"
+    assert service["pids_limit"] == "${HA_SATIMAGE_PIDS_LIMIT:-128}"
+    dockerfile = (ROOT / "docker/Dockerfile").read_text()
+    for variable in (
+        "OMP_NUM_THREADS", "OMP_THREAD_LIMIT", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS", "NUMEXPR_MAX_THREADS", "VECLIB_MAXIMUM_THREADS",
+        "BLIS_NUM_THREADS",
+    ):
+        assert f"{variable}=1" in dockerfile

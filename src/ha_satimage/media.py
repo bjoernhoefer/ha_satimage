@@ -22,6 +22,7 @@ from pathlib import Path
 from PIL import Image
 
 from ha_satimage.buffer import CACHE_DIRNAME, Frame, RingBuffer
+from ha_satimage.resources import HEAVY_WORK_LOCK
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,7 @@ def _encode_mp4(images, fps: float) -> bytes:
             codec="libx264",
             pixelformat="yuv420p",
             macro_block_size=None,
+            ffmpeg_params=["-threads", "1", "-filter_threads", "1"],
         ) as writer:
             for image in images:
                 writer.append_data(np.asarray(image))
@@ -141,7 +143,14 @@ def animation(buffer: RingBuffer, ext: str, fps: float) -> bytes | None:
     path = _animation_path(buffer, frames, fps, ext)
     if path.exists():
         return path.read_bytes()
-    with _lock_for(path):
+    with HEAVY_WORK_LOCK, _lock_for(path):
+        if path.exists():
+            return path.read_bytes()
+        # Frames can be pruned while this request waits for a render/encoder.
+        frames = list(reversed(buffer.frames_newest_first()))
+        if not frames:
+            return None
+        path = _animation_path(buffer, frames, fps, ext)
         if path.exists():
             return path.read_bytes()
         data = ENCODERS[ext](_iter_images(buffer, frames), fps)

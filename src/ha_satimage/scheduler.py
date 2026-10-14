@@ -74,6 +74,7 @@ from ha_satimage.sources import (
     render_fci_slot,
     render_with,
 )
+from ha_satimage.resources import HEAVY_WORK_LOCK
 from ha_satimage.status import StatusStore
 
 if TYPE_CHECKING:
@@ -89,6 +90,8 @@ SYNC_JOB_ID = "source-sync"
 # Archive renders run in their own executor so they never occupy the
 # threads of the preview renders and downloads.
 ARCHIVE_EXECUTOR = "archive"
+DOWNLOAD_EXECUTOR = "download"
+MEDIA_EXECUTOR = "media"
 # Download (~100 MB) + rendering one region stays well below this.
 LOCK_TIMEOUT_SECONDS = 15 * 60
 # Download jobs check at this interval whether they are due (no network).
@@ -154,7 +157,7 @@ class RenderScheduler:
         self._status = status_store
         self._source_sync = source_sync
         self._maintenance = maintenance
-        self._render_lock = threading.Lock()
+        self._render_lock = HEAVY_WORK_LOCK
         # Preview renders waiting for the render lock (archive renders yield).
         self._preview_waiting = 0
         self._preview_lock = threading.Lock()
@@ -163,7 +166,13 @@ class RenderScheduler:
         self._scheduler = BackgroundScheduler(executors={
             "default": ThreadPoolExecutor(10),
             ARCHIVE_EXECUTOR: ThreadPoolExecutor(1),
+            DOWNLOAD_EXECUTOR: ThreadPoolExecutor(2),
+            MEDIA_EXECUTOR: ThreadPoolExecutor(1),
         })
+        logger.info(
+            "Resource protection: one render/animation at a time; "
+            "download workers=2, media workers=1"
+        )
         # Region -> settings at the last setup (detects changes).
         self._signatures: dict[str, tuple[int, str]] = {}
         self._downloads: dict[str, DownloadState] = {}
@@ -255,6 +264,7 @@ class RenderScheduler:
                 seconds=TICK_SECONDS,
                 args=[source_id],
                 id=f"{DOWNLOAD_JOB_PREFIX}{source_id}",
+                executor=DOWNLOAD_EXECUTOR,
                 next_run_time=now,
                 max_instances=1,
                 coalesce=True,
@@ -952,11 +962,12 @@ class RenderScheduler:
 
         if new_frame is not None:
             # Separate job per region (pending ones are coalesced):
-            # blocks neither the render lock nor the next run.
+            # Uses its own worker; encoding shares the render memory budget.
             self._scheduler.add_job(
                 self._prewarm,
                 args=[region_name, buffer, config.server.mjpeg_fps],
                 id=f"{MEDIA_JOB_PREFIX}{region_name}",
+                executor=MEDIA_EXECUTOR,
                 replace_existing=True,
                 misfire_grace_time=None,
             )

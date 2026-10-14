@@ -16,6 +16,8 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
+from ha_satimage.resources import HEAVY_WORK_LOCK
+
 logger = logging.getLogger(__name__)
 
 # Custom composite definitions (e.g. natural_color_hrv_with_night_ir).
@@ -238,13 +240,14 @@ def render_in_subprocess(
     request: RenderRequest, timeout: float = RENDER_TIMEOUT_SECONDS, retries: int = 1
 ):
     """Renders in a child process; retries if it dies without a result."""
-    for attempt in range(retries + 1):
-        try:
-            return _run_once(request, timeout)
-        except RenderProcessCrashed as exc:
-            if attempt >= retries:
-                raise
-            logger.warning("%s - retrying", exc)
+    with HEAVY_WORK_LOCK:
+        for attempt in range(retries + 1):
+            try:
+                return _run_once(request, timeout)
+            except RenderProcessCrashed as exc:
+                if attempt >= retries:
+                    raise
+                logger.warning("%s - retrying", exc)
 
 
 __all__ = [

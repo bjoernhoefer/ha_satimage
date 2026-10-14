@@ -405,9 +405,11 @@ def test_viewer_format_switches_between_jpeg_and_png(ui, live_server):
     assert [o.strip() for o in fmt.locator("option").all_inner_texts()][:2]
 
 
-def test_live_format_mp4_and_gif(ui, live_server):
+@pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
+def test_live_format_mp4_and_gif(request, page_fixture, live_server):
+    ui = request.getfixturevalue(page_fixture)
     live_server.ensure_frames("wien", 2)
-    ui.reload()
+    ui.goto(live_server.url + "/")
     ui.get_by_test_id("live-wien").click()
     fmt = ui.get_by_test_id("viewer-format")
     expect(fmt).to_have_value("mjpeg")
