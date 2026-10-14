@@ -531,10 +531,22 @@ def test_logs_are_shown_at_the_bottom(ui, live_server):
     # Logs are at the bottom, followed only by the API link list.
     assert last_two == ["sec-logs", "sec-api"]
     logs = ui.get_by_test_id("logs")
+    expect(ui.get_by_test_id("logs-autoscroll")).to_have_count(0)
     expect(logs.locator('[data-testid="log-line"]').first).to_be_visible(timeout=10000)
 
+    ui.evaluate("""() => {
+      const logs = document.querySelector('[data-testid="logs"]');
+      for (let i = 0; i < 100; i++) {
+        const line = document.createElement('div');
+        line.className = 'log-line';
+        line.textContent = 'Existing log line ' + i;
+        logs.append(line);
+      }
+      logs.scrollTop = 0;
+    }""")
     ui.get_by_test_id("refresh-mallorca").click()
     expect(logs).to_contain_text("Manual refresh requested for mallorca", timeout=10000)
+    assert logs.evaluate("(element) => element.scrollTop") == 0
 
     ui.get_by_test_id("logs-level").select_option("ERROR")
     expect(ui.locator('[data-testid="log-line"][data-level="INFO"]').first).to_be_hidden()

@@ -443,7 +443,6 @@
           <option value="WARNING">Warnings+</option>
           <option value="ERROR">Errors only</option>
         </select></label>
-      <label class="inline"><input type="checkbox" id="logs-autoscroll" data-testid="logs-autoscroll" checked> auto-scroll</label>
       <button type="button" data-testid="logs-clear" style="margin-top:0.4rem">Clear display</button>
       <a class="button" style="margin-top:0.4rem" href="/api/logs?format=text&amp;limit=0" download="ha_satimage.log"
          data-testid="logs-download">Download</a>
@@ -1136,7 +1135,6 @@
         const data = await api("/api/logs?after=" + lastLogId);
         if (data.entries.length) {
           const min = LEVELS[document.getElementById("logs-level").value];
-          const nearBottom = logsEl.scrollHeight - logsEl.scrollTop - logsEl.clientHeight < 40;
           for (const e of data.entries) {
             const line = el("div", { class: "log-line " + e.level, "data-testid": "log-line", "data-level": e.level },
               el("span", { class: "ts", text: fmtTime(e.ts, true) + " " }),
@@ -1148,7 +1146,6 @@
             lastLogId = e.id;
           }
           while (logsEl.childElementCount > 1500) logsEl.firstElementChild.remove();
-          if (document.getElementById("logs-autoscroll").checked || nearBottom) logsEl.scrollTop = logsEl.scrollHeight;
         }
       } catch (err) { /* next attempt */ }
       setTimeout(pollLogs, 2000);
