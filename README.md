@@ -28,6 +28,64 @@ Then:
 - Example camera (Vienna): http://\<host\>:6060/regions/wien/mjpeg
 - Live view in the browser (also on phones): http://\<host\>:6060/live/wien
 
+### Render resources and Grafana
+
+The **Render resources** box below the logs is collapsed by default. Open it
+to see RAM (average/minimum/maximum RSS in MiB), render duration in seconds,
+completed attempts, active attempts, skipped attempts and failures, grouped
+by process kind, source, region and composite. It refreshes every five seconds
+while open and also offers a manual refresh.
+
+- JSON API: `GET /api/render-metrics` (bytes/seconds, `started_at`, sampling
+  interval and `processes`).
+- Prometheus exposition: `GET /metrics` (no credentials, private network only).
+- Scope: preview renders, individual archive images, location-map renders and
+  **each** Satpy subprocess attempt, including failed attempts before a retry.
+  A recovered retry increments subprocess failures, but not the parent failure
+  count. `NoNewData` increments skips, not failures; attempts/durations include
+  skips. Waiting for the global render lock is excluded.
+- RSS is sampled every 100 ms via Linux `/proc`. Parent rows show the **whole
+  web process** during that render, not incremental job allocations; subprocess
+  rows show the render child plus its descendants. Shared pages are counted
+  per process: **do not sum parent/child rows**. RAM averages are sample-weighted
+  across attempts; durations are averaged across completed attempts.
+  Peaks between samples can be missed; unavailable RSS is `null`, not zero.
+- Statistics live in bounded memory (256 label combinations plus one overflow
+  group), reset on service restart and do not retain individual runs. Prometheus
+  provides durable history outside the memory-constrained container. Failure
+  types are exposed without exception text. `RenderProcessCrashed` includes
+  signal deaths; `RenderTimeoutError` identifies timeouts. SIGKILL alone does
+  **not** prove OOM; consult host/container OOM logs. A killed web process
+  cannot record its final failure.
+
+Add this job to your existing Prometheus configuration (use the Docker host's
+address, reachable from Prometheus; not `localhost` inside another container):
+
+```yaml
+scrape_configs:
+  - job_name: ha_satimage
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["satellite-host:6060"]
+```
+
+Select that Prometheus data source in Grafana and use these queries, with
+legend `{{kind}} / {{source}} / {{region}} / {{composite}}`:
+
+| Panel | PromQL | Unit |
+|---|---|---|
+| RAM average / minimum / maximum | `ha_satimage_render_rss_avg_bytes` (or `_min_bytes`, `_max_bytes`) | bytes (IEC) |
+| Render duration average / minimum / maximum | `ha_satimage_render_duration_avg_seconds` (or `_min_seconds`, `_max_seconds`) | seconds |
+| Failures in the last hour | `increase(ha_satimage_render_failures_total[1h])` | count |
+| Attempts per minute | `rate(ha_satimage_render_attempts_total[5m]) * 60` | count |
+| Average duration over the last hour | `increase(ha_satimage_render_duration_seconds_total[1h]) / clamp_min(increase(ha_satimage_render_attempts_total[1h]), 1)` | seconds |
+| Active renders | `ha_satimage_render_active` | count |
+
+Filter `kind="subprocess"` to diagnose child-process memory/crashes separately
+from `preview`, `archive` and `location-map`. Grafana reads the scraped data
+from Prometheus; the application does not push directly to Grafana and needs
+no Grafana token or additional agent.
+
 The EUMETSAT credentials (consumer key + secret) can either be entered in
 the web UI (persisted to `<data>/config.yaml`) or set via environment
 variables (`EUMETSAT_CONSUMER_KEY` / `EUMETSAT_CONSUMER_SECRET`, see

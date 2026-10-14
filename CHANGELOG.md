@@ -3,6 +3,17 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] — 2026-10-14
+
+### Added
+
+- Collapsed render-resource overview below the logs, with sampled average,
+  minimum and maximum RSS and render duration, active runs, skips and failures.
+- Track preview, archive and location-map rendering and each Satpy subprocess
+  attempt (including retries, crashes and timeouts) without extra dependencies.
+- JSON telemetry at `/api/render-metrics` and Prometheus metrics at `/metrics`
+  for collection by Prometheus/Grafana; counters reset on service restart.
+
 ## [1.8.0] — 2026-10-14
 
 ### Added

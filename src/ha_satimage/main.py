@@ -53,6 +53,7 @@ from ha_satimage.sources.fci_archive import (
 from ha_satimage.source_sync import SourceSync
 from ha_satimage.status import StatusStore
 from ha_satimage.maintenance import MaintenanceSchedule
+from ha_satimage.render_metrics import render_metrics
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("HA_SATIMAGE_DATA_DIR", "/data"))
@@ -539,6 +540,17 @@ async def adopt_source(payload: dict):
     return definition.model_dump()
 
 
+@app.get("/api/render-metrics")
+async def get_render_metrics():
+    return render_metrics.snapshot()
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def prometheus_metrics():
+    return Response(render_metrics.prometheus(),
+                    media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
 @app.get("/api/logs")
 async def get_logs(after: int = 0, limit: int = 500, format: str = "json"):
     entries = log_buffer.entries(after=after, limit=limit)
@@ -611,7 +623,13 @@ async def location_map_render_satellite():
 
     def _render() -> dict:
         with scheduler.exclusive(timeout=MAP_RENDER_LOCK_TIMEOUT):
-            return satellite_map.render(config)
+            entry = location_change.map_source(config)
+            with render_metrics.measure(
+                "location-map", region="Europe",
+                source=entry.id if entry else "",
+                composite=location_change.SATELLITE_COMPOSITE,
+            ):
+                return satellite_map.render(config)
 
     try:
         info = await run_in_threadpool(_render)

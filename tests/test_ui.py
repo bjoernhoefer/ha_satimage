@@ -525,11 +525,11 @@ def test_mobile_viewer_fills_screen_and_back_closes(mobile_page, live_server):
 
 def test_logs_are_shown_at_the_bottom(ui, live_server):
     live_server.ensure_frames("wien", 1)
-    last_two = ui.evaluate(
-        "() => [...document.querySelectorAll('main > section')].slice(-2).map((s) => s.id)"
+    last_three = ui.evaluate(
+        "() => [...document.querySelectorAll('main > section')].slice(-3).map((s) => s.id)"
     )
-    # Logs are at the bottom, followed only by the API link list.
-    assert last_two == ["sec-logs", "sec-api"]
+    # Render resources follow logs, before the API link list.
+    assert last_three == ["sec-logs", "sec-render-metrics", "sec-api"]
     logs = ui.get_by_test_id("logs")
     expect(logs.locator('[data-testid="log-line"]').first).to_be_visible(timeout=10000)
 
@@ -1516,7 +1516,71 @@ def test_location_deep_link_opens_editor(page, live_server):
     assert "location=" not in page.url
 
 
-SECTIONS = ["sources", "storage", "credentials", "status", "logs", "api"]
+@pytest.mark.keep_folded
+@pytest.mark.parametrize("page_fixture", ["page", "mobile_page"])
+def test_render_resources_fold_refresh_and_api_links(request, page_fixture, live_server):
+    page = request.getfixturevalue(page_fixture)
+    page.add_init_script("window.__keepFolded = true")
+    live_server.ensure_frames("wien", 1)
+    page.goto(live_server.url + "/")
+    fold = page.get_by_test_id("sec-render-metrics-fold")
+    expect(fold).not_to_have_attribute("open", "")
+    expect(page.get_by_test_id("render-metrics-table")).to_be_hidden()
+    fold.locator("summary").click()
+    expect(page.get_by_test_id("render-metrics-table")).to_be_visible()
+    rows = page.get_by_test_id("render-metrics-rows")
+    expect(rows).to_contain_text("preview / dummy / wien")
+    expect(page.get_by_test_id("render-metrics-since")).to_contain_text("Collecting since")
+    expect(page.get_by_test_id("render-metrics-table")).to_contain_text("RAM avg / min / max")
+    page.get_by_test_id("render-metrics-refresh").click()
+    expect(rows).to_contain_text("preview / dummy / wien")
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+    fold.locator("summary").click()
+    expect(page.get_by_test_id("render-metrics-table")).to_be_hidden()
+    fold.locator("summary").click()
+    page.get_by_test_id("render-metrics-json").click()
+    page.wait_for_url("**/api/render-metrics")
+    assert "rss_avg_bytes" in page.locator("body").inner_text()
+    page.go_back()
+    fold = page.get_by_test_id("sec-render-metrics-fold")
+    if not fold.evaluate("(el) => el.open"):
+        fold.locator("summary").click()
+    page.get_by_test_id("render-metrics-prometheus").click()
+    page.wait_for_url("**/metrics")
+    assert "ha_satimage_render_failures_total" in page.locator("body").inner_text()
+
+
+@pytest.mark.keep_folded
+def test_render_resources_empty_error_and_failed_process(page, live_server):
+    page.route("**/api/render-metrics", lambda route: route.fulfill(
+        json={"started_at": "2026-10-14T00:00:00Z", "processes": []}))
+    page.goto(live_server.url + "/")
+    page.get_by_test_id("sec-render-metrics-fold").locator("summary").click()
+    expect(page.get_by_test_id("render-metrics-message")).to_have_text("No render measurements yet.")
+    page.unroute("**/api/render-metrics")
+    page.route("**/api/render-metrics", lambda route: route.fulfill(
+        status=503, json={"detail": "Unavailable"}))
+    page.get_by_test_id("render-metrics-refresh").click()
+    expect(page.get_by_test_id("render-metrics-message")).to_contain_text("Could not load")
+    page.unroute("**/api/render-metrics")
+    page.route("**/api/render-metrics", lambda route: route.fulfill(json={
+        "started_at": "2026-10-14T00:00:00Z", "processes": [{
+            "kind": "subprocess", "source": "<img src=x onerror=alert(1)>",
+            "region": "wien", "composite": "natural", "runs": 2, "active": 0, "skipped": 0,
+            "failures": 1, "last_error": "RenderProcessCrashed",
+            "rss_avg_bytes": 104857600, "rss_min_bytes": 52428800, "rss_max_bytes": 209715200,
+            "duration_avg_seconds": 2, "duration_min_seconds": 1, "duration_max_seconds": 3,
+        }]}))
+    page.get_by_test_id("render-metrics-refresh").click()
+    rows = page.get_by_test_id("render-metrics-rows")
+    expect(rows).to_contain_text("100.00 / 50.00 / 200.00")
+    expect(rows).to_contain_text("2.00 / 1.00 / 3.00")
+    expect(rows).to_contain_text("1 / RenderProcessCrashed")
+    expect(rows.locator("img")).to_have_count(0)
+    expect(page.get_by_test_id("render-metrics-message")).to_be_empty()
+
+
+SECTIONS = ["sources", "storage", "credentials", "status", "logs", "render-metrics", "api"]
 
 
 @pytest.mark.keep_folded

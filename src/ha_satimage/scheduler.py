@@ -75,6 +75,7 @@ from ha_satimage.sources import (
     render_with,
 )
 from ha_satimage.resources import HEAVY_WORK_LOCK
+from ha_satimage.render_metrics import render_metrics
 from ha_satimage.status import StatusStore
 
 if TYPE_CHECKING:
@@ -769,7 +770,11 @@ class RenderScheduler:
                 try:
                     if self._config_store.get() is not config or archive.cleared_before != cutoff:
                         return stored
-                    rendered = render_with(entry, region, composite, config)
+                    with render_metrics.measure(
+                        "archive", source=source_id, region=region.name, composite=composite,
+                        skip_exceptions=(NoNewData,),
+                    ):
+                        rendered = render_with(entry, region, composite, config)
                     if self._config_store.get() is not config:
                         return stored
                     if cutoff is not None and rendered.sensing_time <= cutoff:
@@ -874,7 +879,11 @@ class RenderScheduler:
                         break
                     if archive.has(region.name, entry.id, composite, slot.archive_time):
                         continue  # rendered on request meanwhile; finally releases the lock
-                    rendered = render_fci_slot(slot, region, composite, collection)
+                    with render_metrics.measure(
+                        "archive", source=entry.id, region=region.name, composite=composite,
+                        skip_exceptions=(NoNewData,),
+                    ):
+                        rendered = render_fci_slot(slot, region, composite, collection)
                     if self._config_store.get() is not config:
                         break
                     # Named after the raw slot, so the viewer finds it as pre-rendered.
@@ -963,7 +972,11 @@ class RenderScheduler:
                     region.name, definition.id, definition.driver, region.composite,
                 )
                 try:
-                    rendered = source.render(region, config, last_sensing)
+                    with render_metrics.measure(
+                        "preview", source=definition.id, region=region.name,
+                        composite=region.composite, skip_exceptions=(NoNewData,),
+                    ):
+                        rendered = source.render(region, config, last_sensing)
                 except NoNewData as info:
                     logger.info("No new capture for %s: %s", region_name, info)
                 else:

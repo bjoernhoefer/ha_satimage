@@ -149,7 +149,7 @@
     <h1>ha_satimage – satellite images for Home Assistant <small data-testid="app-version" style="font-weight:normal;opacity:.7">v{{ version }}</small></h1>
     <nav class="toc">
       <a href="#sec-regions">Regions</a><a href="#sec-sources">Sources</a><a href="#sec-storage">Storage</a>
-      <a href="#sec-credentials">Credentials</a><a href="#sec-status">Status</a><a href="#sec-logs">Logs</a><a href="#sec-api">API</a>
+      <a href="#sec-credentials">Credentials</a><a href="#sec-status">Status</a><a href="#sec-logs">Logs</a><a href="#sec-render-metrics">Render resources</a><a href="#sec-api">API</a>
     </nav>
   </header>
   <main>
@@ -449,6 +449,27 @@
          data-testid="logs-download">Download</a>
     </div>
     <div class="logs" data-testid="logs" id="logs" aria-live="polite"></div>
+    </details>
+  </section>
+  <section id="sec-render-metrics" data-testid="sec-render-metrics">
+    <details class="fold" data-testid="sec-render-metrics-fold">
+      <summary><h2>Render resources</h2></summary>
+      <p class="muted">Since service start. RAM = sampled RSS (MiB), not allocated memory.
+        Parent rows show the web process during rendering; subprocess rows include their descendants.
+        Shared pages may be counted twice; do not add rows. SIGKILL can indicate OOM, but is not proof.</p>
+      <p class="muted" data-testid="render-metrics-since"></p>
+      <p><a href="/api/render-metrics" data-testid="render-metrics-json">JSON API</a> ·
+        <a href="/metrics" data-testid="render-metrics-prometheus">Prometheus / Grafana</a></p>
+      <button type="button" data-testid="render-metrics-refresh">Refresh</button>
+      <p data-testid="render-metrics-message" class="muted" role="status"></p>
+      <div class="table-wrap">
+        <table data-testid="render-metrics-table">
+          <thead><tr><th>Process / source / region / image type</th><th>Runs / active / skipped</th>
+            <th>Failures / last error</th><th>RAM avg / min / max (MiB)</th>
+            <th>Duration avg / min / max (s)</th></tr></thead>
+          <tbody data-testid="render-metrics-rows"></tbody>
+        </table>
+      </div>
     </details>
   </section>
   <section id="sec-api" data-testid="sec-api">
@@ -1155,6 +1176,44 @@
     }
     document.getElementById("logs-level").addEventListener("change", applyLogFilter);
     byTestId("logs-clear").addEventListener("click", () => logsEl.replaceChildren());
+
+    async function loadRenderMetrics() {
+      try {
+        const data = await api("/api/render-metrics");
+        const rows = byTestId("render-metrics-rows");
+        rows.replaceChildren();
+        const number = (value, divisor = 1) => value == null ? "—" : (value / divisor).toFixed(2);
+        for (const item of data.processes) {
+          const row = document.createElement("tr");
+          const values = [
+            [item.kind, item.source, item.region, item.composite].filter(Boolean).join(" / "),
+            `${item.runs} / ${item.active} / ${item.skipped}`,
+            `${item.failures} / ${item.last_error || "—"}`,
+            ["avg", "min", "max"].map(s => number(item[`rss_${s}_bytes`], 1048576)).join(" / "),
+            ["avg", "min", "max"].map(s => number(item[`duration_${s}_seconds`])).join(" / ")
+          ];
+          for (const value of values) {
+            const cell = document.createElement("td");
+            cell.textContent = value;
+            cell.style.overflowWrap = "anywhere";
+            row.append(cell);
+          }
+          rows.append(row);
+        }
+        byTestId("render-metrics-since").textContent = "Collecting since " + data.started_at;
+        byTestId("render-metrics-message").textContent = data.processes.length ? "" : "No render measurements yet.";
+      } catch (err) {
+        byTestId("render-metrics-message").textContent = "Could not load render measurements: " + err.message;
+      }
+    }
+    const metricsFold = byTestId("sec-render-metrics-fold");
+    metricsFold.addEventListener("toggle", () => { if (metricsFold.open) loadRenderMetrics(); });
+    byTestId("render-metrics-refresh").addEventListener("click", loadRenderMetrics);
+    function renderMetricsLoop() {
+      const update = metricsFold.open ? loadRenderMetrics() : Promise.resolve();
+      update.finally(() => setTimeout(renderMetricsLoop, 5000));
+    }
+    renderMetricsLoop();
 
     /* ---------- Fullscreen viewer ---------- */
     const viewer = document.getElementById("viewer");

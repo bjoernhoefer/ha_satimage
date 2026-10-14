@@ -17,6 +17,7 @@ from io import BytesIO
 from pathlib import Path
 
 from ha_satimage.resources import HEAVY_WORK_LOCK
+from ha_satimage.render_metrics import render_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,10 @@ class RenderProcessCrashed(SatpyRenderError):
     """Child process died without a result (signal, memory)."""
 
 
+class RenderTimeoutError(SatpyRenderError):
+    """Child process did not return within its deadline."""
+
+
 def _describe_exit(exitcode: int | None) -> str:
     if exitcode is not None and exitcode < 0:
         try:
@@ -213,27 +218,33 @@ def _run_once(request: RenderRequest, timeout: float):
     context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
     process = context.Process(target=_worker, args=(request, child), daemon=True)
-    process.start()
-    child.close()
-    try:
-        if not parent.poll(timeout):
-            raise SatpyRenderError(f"Rendering exceeded the time limit of {timeout:.0f}s")
+    with render_metrics.measure(
+        "subprocess", composite=request.composite,
+        pid=lambda: process.pid, descendants=True,
+    ):
         try:
-            status, payload = parent.recv()
-        except EOFError as exc:
-            process.join(timeout=5)
-            raise RenderProcessCrashed(
-                f"Render process {_describe_exit(process.exitcode)}"
-            ) from exc
-    finally:
-        process.join(timeout=5)
-        if process.is_alive():
-            process.kill()
-            process.join()
-        parent.close()
-    if status == "error":
-        raise SatpyRenderError(payload)
-    return payload
+            process.start()
+            child.close()
+            if not parent.poll(timeout):
+                raise RenderTimeoutError(f"Rendering exceeded the time limit of {timeout:.0f}s")
+            try:
+                status, payload = parent.recv()
+            except EOFError as exc:
+                process.join(timeout=5)
+                raise RenderProcessCrashed(
+                    f"Render process {_describe_exit(process.exitcode)}"
+                ) from exc
+        finally:
+            if process.pid is not None:
+                process.join(timeout=5)
+                if process.is_alive():
+                    process.kill()
+                    process.join()
+            child.close()
+            parent.close()
+        if status == "error":
+            raise SatpyRenderError(payload)
+        return payload
 
 
 def render_in_subprocess(
