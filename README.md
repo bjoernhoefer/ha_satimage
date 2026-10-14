@@ -378,6 +378,15 @@ Releases are git tags `vX.Y.Z`; CI builds them into the image tags `X.Y.Z`,
   sources" every region is rendered in every image type right after each
   download; the "🗄 Archive" viewer shows only these ready-made images
   (nothing is rendered while browsing).
+- **Clear archive** (under "Storage location & history"): after confirmation,
+  deletes all archived PNG/JPEG images and FCI raw slots, but keeps the normal
+  region history, configuration and credentials. It waits for the current
+  render/download to finish. A persistent scan-time cutoff prevents cleared
+  scans from being downloaded or backfilled again, including after restart
+  or "Archive all sources now"; only scans newer than the clearing time are
+  archived afterwards. This clears a failing backlog, not the memory needs
+  of future scans. API: `POST /api/archive/clear`; the response reports
+  removed `images`, `raw_slots` and `cleared_before`.
 - **Border overlay**: country/administrative borders and worldwide coastlines
   (including islands). Enabling borders or upgrading the overlay updates
   historical archive PNGs and JPEGs without deleting their scans. On startup

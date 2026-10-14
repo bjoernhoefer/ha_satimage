@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from ha_satimage.archive import SLOT_FORMAT, slot_name, slot_time
+from ha_satimage.archive import SLOT_FORMAT, clear_archive_directory, cleared_before, slot_name, slot_time
 from ha_satimage.config import (
     FCI_CHUNK_COUNT,
     AppConfig,
@@ -51,6 +51,10 @@ _SLOT_RE = re.compile(r"^\d{8}T\d{6}Z$")
 
 class ArchiveError(Exception):
     """Error accessing the Data Store or the archive."""
+
+
+class ClearedCapture(Exception):
+    """The newest available scan was deliberately cleared; wait for a new one."""
 
 
 def _geos_y(lat: float, lon: float, lon_0: float = 0.0) -> float | None:
@@ -185,8 +189,16 @@ class FciArchive:
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._status: dict[str, dict] = {}
+
+    def clear(self, cutoff: datetime) -> int:
+        with self._lock:
+            count = sum(len(self.slots(collection)) for collection in self.collections())
+            clear_archive_directory(self.root, cutoff)
+            self._status.clear()
+            logger.info("Cleared %d FCI raw slots; only scans after %s will be downloaded", count, cutoff)
+            return count
 
     # -- Reading -----------------------------------------------------------
     def collection_dir(self, collection: str) -> Path:
@@ -210,16 +222,17 @@ class FciArchive:
 
     def slots(self, collection: str) -> list[Slot]:
         """All completely written slots, newest first."""
-        directory = self.collection_dir(collection)
-        if not directory.is_dir():
-            return []
-        slots = [
-            slot
-            for path in directory.iterdir()
-            if path.is_dir() and _SLOT_RE.match(path.name)
-            and (slot := self._read_slot(collection, path)) is not None
-        ]
-        return sorted(slots, key=lambda s: s.sensing_end, reverse=True)
+        with self._lock:
+            directory = self.collection_dir(collection)
+            if not directory.is_dir():
+                return []
+            slots = [
+                slot
+                for path in directory.iterdir()
+                if path.is_dir() and _SLOT_RE.match(path.name)
+                and (slot := self._read_slot(collection, path)) is not None
+            ]
+            return sorted(slots, key=lambda s: s.sensing_end, reverse=True)
 
     def slot(self, collection: str, name: str) -> Slot | None:
         if not _SLOT_RE.match(name):
@@ -238,17 +251,18 @@ class FciArchive:
         retention_hours: int,
     ) -> Slot:
         """Ensure the newest slot (download missing chunks), remove old ones."""
-        status = self._status.setdefault(collection, {})
-        status["last_sync_at"] = datetime.now(timezone.utc).isoformat()
-        try:
-            slot = self._sync(collection, credentials, chunks)
-        except ArchiveError as exc:
-            status["last_error"] = str(exc)
-            raise
-        status["last_error"] = None
-        status["newest"] = slot.name
-        self.prune(collection, retention_hours)
-        return slot
+        with self._lock:
+            status = self._status.setdefault(collection, {})
+            status["last_sync_at"] = datetime.now(timezone.utc).isoformat()
+            try:
+                slot = self._sync(collection, credentials, chunks)
+            except ArchiveError as exc:
+                status["last_error"] = str(exc)
+                raise
+            status["last_error"] = None
+            status["newest"] = slot.name
+            self.prune(collection, retention_hours)
+            return slot
 
     def _sync(self, collection: str, credentials: EumetsatCredentials, chunks: set[int]) -> Slot:
         if not credentials.consumer_key or not credentials.consumer_secret:
@@ -274,6 +288,9 @@ class FciArchive:
 
             product_id = str(newest)
             sensing_end = _as_utc(newest.sensing_end)
+            cutoff = cleared_before(self.root)
+            if cutoff is not None and sensing_end <= cutoff:
+                raise ClearedCapture(f"Scan {product_id} predates Clear archive; waiting for a new scan")
             sensing_start = _as_utc(getattr(newest, "sensing_start", None) or sensing_end)
             slot_dir = self.collection_dir(collection) / slot_name(sensing_end)
             slot = Slot(slot_dir.name, collection, product_id, sensing_start, sensing_end, slot_dir)

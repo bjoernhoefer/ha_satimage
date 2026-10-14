@@ -48,6 +48,32 @@ SLOT_FORMAT = "%Y%m%dT%H%M%SZ"
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SLOT_RE = re.compile(r"^\d{8}T\d{6}Z$")
+CLEAR_MARKER = ".cleared_before"
+
+
+def cleared_before(root: Path) -> datetime | None:
+    try:
+        return datetime.fromisoformat((root / CLEAR_MARKER).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+
+
+def clear_archive_directory(root: Path, cutoff: datetime) -> None:
+    """Keep a durable scan cutoff while removing only this archive's contents."""
+    if root.is_symlink():
+        raise OSError(f"Refusing to clear a symlinked archive: {root}")
+    root.mkdir(parents=True, exist_ok=True)
+    marker = root / CLEAR_MARKER
+    temporary = marker.with_suffix(".part")
+    temporary.write_text(cutoff.isoformat(), encoding="utf-8")
+    temporary.replace(marker)
+    for path in root.iterdir():
+        if path.name == CLEAR_MARKER:
+            continue
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
 
 
 def slot_name(sensing: datetime) -> str:
@@ -121,6 +147,18 @@ class RenderArchive:
         self._lock = threading.RLock()
         # Region -> (file stamp, parsed list): avoids re-parsing per lookup.
         self._index_cache: dict[str, tuple[tuple[int, int], dict]] = {}
+
+    @property
+    def cleared_before(self) -> datetime | None:
+        return cleared_before(self.root)
+
+    def clear(self, cutoff: datetime) -> int:
+        with self._lock:
+            count = self.count()
+            clear_archive_directory(self.root, cutoff)
+            self._index_cache.clear()
+            logger.info("Cleared %d archived images; only scans after %s will be archived", count, cutoff)
+            return count
 
     # -- Paths -------------------------------------------------------------
     def dir_for(self, region: str, source: str, composite: str) -> Path | None:
@@ -415,6 +453,7 @@ class RenderArchive:
             "images": self.count(),
             "used_bytes": self.used_bytes(),
             "regions": regions,
+            "cleared_before": self.cleared_before.isoformat() if self.cleared_before else None,
         }
 
     # -- Cleanup -----------------------------------------------------------

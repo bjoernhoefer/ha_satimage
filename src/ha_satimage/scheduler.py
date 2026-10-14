@@ -472,6 +472,11 @@ class RenderScheduler:
         state.last_check_at = checked
         try:
             sensing = probed or get_source(entry.driver).fetch(entry, config)
+        except NoNewData as exc:
+            logger.info("Download %s: %s", source_id, exc)
+            state.last_error = None
+            state.due = checked + RETRY_INTERVAL
+            return False
         except Exception as exc:
             if isinstance(exc, RenderError):
                 logger.error("Download %s failed: %s", source_id, exc)
@@ -581,6 +586,19 @@ class RenderScheduler:
         )
 
     # -- Archive ("download all sources") --------------------------------------
+    def clear_archive(self) -> dict:
+        """Finish the current image, clear both archives and discard old scans."""
+        from ha_satimage.sources.fci_archive import get_archive
+
+        logger.info("Clear archive requested; waiting for active rendering/downloads")
+        with self.exclusive(timeout=LOCK_TIMEOUT_SECONDS):
+            config = self._config_store.get()
+            cutoff = datetime.now(timezone.utc)
+            raw_slots = get_archive(archive_root(config)).clear(cutoff)
+            images = get_render_archive(render_archive_root(config)).clear(cutoff)
+        logger.info("Archive cleared: %d images, %d raw slots", images, raw_slots)
+        return {"images": images, "raw_slots": raw_slots, "cleared_before": cutoff.isoformat()}
+
     def _queue_archive(self, source_id: str, sensing: datetime) -> None:
         """Queue an archive run; one pending run per source is enough.
 
@@ -730,11 +748,15 @@ class RenderScheduler:
 
     def _archive_newest(self, entry, config, archive, composites, sensing) -> int:
         """Render the newest capture of a source in every region and image type."""
+        cutoff = archive.cleared_before
+        if cutoff is not None and sensing <= cutoff:
+            logger.info("Archive %s: cleared scan skipped", entry.id)
+            return 0
         source_id = entry.id
         stored = 0
         for region in config.regions:
             with self.exclusive(timeout=LOCK_TIMEOUT_SECONDS):
-                if self._config_store.get() is not config:
+                if self._config_store.get() is not config or archive.cleared_before != cutoff:
                     return stored
                 archive.sync_region(region.name, region_signature(region))
             for composite in composites:
@@ -745,11 +767,13 @@ class RenderScheduler:
                     return stored
                 started = time.monotonic()
                 try:
-                    if self._config_store.get() is not config:
+                    if self._config_store.get() is not config or archive.cleared_before != cutoff:
                         return stored
                     rendered = render_with(entry, region, composite, config)
                     if self._config_store.get() is not config:
                         return stored
+                    if cutoff is not None and rendered.sensing_time <= cutoff:
+                        continue
                     image = archive.store(
                         region.name, source_id, composite, rendered.sensing_time, rendered.png
                     )
@@ -798,6 +822,7 @@ class RenderScheduler:
             return 0
         try:
             raw = get_archive(archive_root(config))
+            cleared = archive.cleared_before
             collection = entry.collection or DEFAULT_FCI_COLLECTION
             retention = config.archive.render_retention_hours
             needed = {region.name: chunks_for_region(region) for region in config.regions}
@@ -816,6 +841,8 @@ class RenderScheduler:
                     if retention > 0 else None
                 )
                 for slot in raw.slots(collection):
+                    if cleared is not None and slot.sensing_end <= cleared:
+                        continue
                     if cutoff is not None and slot.sensing_end < cutoff:
                         break  # slots are sorted newest first
                     chunks = set(slot.chunks)
@@ -843,6 +870,8 @@ class RenderScheduler:
                     break
                 started = time.monotonic()
                 try:
+                    if self._config_store.get() is not config or archive.cleared_before != cleared:
+                        break
                     if archive.has(region.name, entry.id, composite, slot.archive_time):
                         continue  # rendered on request meanwhile; finally releases the lock
                     rendered = render_fci_slot(slot, region, composite, collection)

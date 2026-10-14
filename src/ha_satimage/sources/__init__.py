@@ -286,7 +286,7 @@ def render_fci_slot(
 def sync_fci_archive(config: AppConfig, collection: str):
     """Download the newest FCI slot into the archive (idempotent), returns the slot."""
     from ha_satimage.config import DEFAULT_FCI_COLLECTION
-    from ha_satimage.sources.fci_archive import ArchiveError, get_archive, wanted_chunks
+    from ha_satimage.sources.fci_archive import ArchiveError, ClearedCapture, get_archive, wanted_chunks
 
     try:
         return get_archive(archive_root(config)).sync(
@@ -295,6 +295,8 @@ def sync_fci_archive(config: AppConfig, collection: str):
             wanted_chunks(config),
             config.archive.retention_hours,
         )
+    except ClearedCapture as exc:
+        raise NoNewData(str(exc)) from exc
     except ArchiveError as exc:
         raise RenderError(str(exc)) from exc
 

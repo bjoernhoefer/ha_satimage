@@ -326,6 +326,96 @@ def archive_of(live_server) -> RenderArchive:
     return RenderArchive(live_server.data_dir / "frames" / "_renders")
 
 
+def test_clear_archive_api_removes_images_raw_data_but_keeps_history(live_server):
+    import json
+
+    archive = archive_of(live_server)
+    image = archive.store("wien", "dummy", "cloudtop", NOW, png())
+    assert archive.count() == 1
+    raw = live_server.data_dir / "frames" / "_archive" / "EO_EUM_DAT_0662" / slot_name(NOW)
+    raw.mkdir(parents=True)
+    (raw / "chunk_0036.nc").write_bytes(b"raw")
+    (raw / "meta.json").write_text(json.dumps({
+        "product_id": "test", "sensing_start": NOW.isoformat(), "sensing_end": NOW.isoformat(),
+    }))
+    frames = live_server.ensure_frames("wien", 1)
+    config = httpx.get(live_server.url + "/api/config").json()
+    response = httpx.post(live_server.url + "/api/archive/clear", json={}, timeout=30)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "cleared"
+    assert response.json()["images"] == 1
+    assert response.json()["raw_slots"] == 1
+    assert not raw.exists()
+    assert not image.path.exists() and not image.jpeg_path.exists()
+    # The same archive instance must not serve its pre-clear index cache.
+    assert archive.count() == 0
+    assert httpx.get(live_server.url + image.as_dict("wien")["url"]).status_code == 404
+    summary = httpx.get(live_server.url + "/api/archive").json()
+    assert summary["collections"] == {}
+    assert summary["renders"]["images"] == 0
+    assert summary["renders"]["cleared_before"] == response.json()["cleared_before"]
+    assert live_server.frames("wien") == frames
+    assert httpx.get(live_server.url + "/api/config").json() == config
+    assert httpx.post(live_server.url + "/api/archive/clear", json={}).status_code == 200
+
+
+def test_clear_prevents_queued_old_scans_after_restart_but_allows_new_ones(tmp_path, monkeypatch):
+    from ha_satimage.buffer import BufferManager
+    from ha_satimage.config import ConfigStore
+    from ha_satimage.scheduler import RenderScheduler
+    from ha_satimage.sources import RenderedFrame, render_archive_root
+    from ha_satimage.status import StatusStore
+    from ha_satimage.archive import get_render_archive
+
+    store = ConfigStore(tmp_path / "config.yaml")
+    config = store.stored().model_copy(deep=True)
+    config.storage.frames_dir = str(tmp_path / "frames")
+    config.sources.catalog = [entry for entry in config.sources.catalog if entry.id == "dummy"]
+    config.sources.catalog[0].enabled = True
+    store.update(config)
+    scheduler = RenderScheduler(store, BufferManager(tmp_path / "frames"), StatusStore())
+    result = scheduler.clear_archive()
+    cutoff = datetime.fromisoformat(result["cleared_before"])
+    calls = []
+
+    def render(entry, region, composite, config):
+        calls.append((region.name, composite))
+        return RenderedFrame(png(), cutoff + timedelta(minutes=10))
+
+    monkeypatch.setattr("ha_satimage.scheduler.render_with", render)
+    restarted = RenderScheduler(store, BufferManager(tmp_path / "frames"), StatusStore())
+    assert restarted.archive_capture("dummy", cutoff) == 0
+    assert restarted.archive_capture("dummy", cutoff - timedelta(minutes=10)) == 0
+    assert calls == []
+    assert restarted.archive_capture("dummy", cutoff + timedelta(minutes=10)) > 0
+    assert get_render_archive(render_archive_root(store.get())).count() == len(calls)
+
+
+def test_clear_cancels_archive_work_already_waiting_for_render_lock(tmp_path, monkeypatch):
+    from ha_satimage.archive import get_render_archive
+    from ha_satimage.buffer import BufferManager
+    from ha_satimage.config import ConfigStore
+    from ha_satimage.scheduler import RenderScheduler
+    from ha_satimage.sources import render_archive_root
+    from ha_satimage.status import StatusStore
+
+    store = ConfigStore(tmp_path / "config.yaml")
+    config = store.stored().model_copy(deep=True)
+    config.storage.frames_dir = str(tmp_path / "frames")
+    config.sources.get("dummy").enabled = True
+    store.update(config)
+    scheduler = RenderScheduler(store, BufferManager(tmp_path / "frames"), StatusStore())
+
+    def acquire(timeout):
+        scheduler.clear_archive()
+        return scheduler._render_lock.acquire()
+
+    monkeypatch.setattr(scheduler, "_acquire_for_archive", acquire)
+    monkeypatch.setattr("ha_satimage.scheduler.render_with", lambda *a: pytest.fail("stale render"))
+    assert scheduler.archive_capture("dummy", datetime.now(timezone.utc)) == 0
+    assert get_render_archive(render_archive_root(store.get())).count() == 0
+
+
 def test_archive_api_lists_sources_composites_and_images(live_server):
     archive = archive_of(live_server)
     archive.store("wien", "dummy", "cloudtop", NOW, png("blue"))

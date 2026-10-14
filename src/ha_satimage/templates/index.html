@@ -345,6 +345,13 @@
         <button type="button" data-testid="archive-render-now">Archive all sources now</button>
         <span class="message" data-testid="archive-render-message" role="status"></span>
       </div>
+      <div class="row">
+        <button type="button" data-testid="archive-clear">Clear archive</button>
+        <span class="message" data-testid="archive-clear-message" role="status"></span>
+      </div>
+      <p class="muted">Clear archive deletes all archived images and FCI raw data.
+        Normal image history is kept. Only scans newer than the clearing time will be archived;
+        new scans can still fail if their rendering needs too much memory.</p>
       <h3 style="font-size:1rem;margin-top:1rem">MTG FCI raw data archive</h3>
       <p class="muted">If an MTG FCI source is active, only the stripes (“chunks”, 1 = south …
         40 = north) needed by the range below and all regions are downloaded per scan (Europe ≈ 32–40, ~180 MB per scan)
@@ -1063,6 +1070,26 @@
         showMessage(message, "Failed: " + err.message, false);
       } finally {
         event.target.disabled = false;
+      }
+    });
+    byTestId("archive-clear").addEventListener("click", async (event) => {
+      if (!window.confirm("Delete all archived images and FCI raw data? This cannot be undone. "
+          + "Normal image history is kept. Only new scans will be archived afterwards.")) return;
+      const button = event.currentTarget;
+      const message = byTestId("archive-clear-message");
+      button.disabled = true;
+      showMessage(message, "Clearing archive – waiting for current work to finish …", true);
+      try {
+        const result = await postJson("/api/archive/clear", {});
+        showMessage(message, "Archive cleared: " + result.images + " image(s), "
+          + result.raw_slots + " raw slot(s). Only new scans will be archived.", true);
+        const summary = await (await fetch("/api/archive")).json();
+        renderArchiveSummary(summary);
+        renderRendersSummary(summary);
+      } catch (err) {
+        showMessage(message, "Failed: " + err.message, false);
+      } finally {
+        button.disabled = false;
       }
     });
     document.getElementById("storage-path").addEventListener("input", (ev) => { ev.target.dataset.touched = "1"; });

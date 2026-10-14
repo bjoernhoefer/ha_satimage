@@ -489,6 +489,20 @@ async def archive_render_now():
     return {"status": "scheduled", "sources": count}
 
 
+@app.post("/api/archive/clear")
+async def clear_archive():
+    """Delete archived images and FCI raw data, without rebuilding old scans."""
+    try:
+        result = await run_in_threadpool(scheduler.clear_archive)
+    except TimeoutError as exc:
+        logger.warning("Could not clear archive: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.exception("Could not clear archive")
+        raise HTTPException(status_code=500, detail=f"Could not clear archive: {exc}") from exc
+    return {"status": "cleared", **result}
+
+
 @app.get("/api/sources")
 async def get_sources():
     config = config_store.get()
