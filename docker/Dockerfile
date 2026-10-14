@@ -29,7 +29,15 @@ ENV MAMBA_DOCKERFILE_ACTIVATE=1 \
     PYTHONUNBUFFERED=1 \
     HA_SATIMAGE_CONFIG=/data/config.yaml \
     SATPY_DATA_DIR=/data/satpy \
-    XDG_CACHE_HOME=/data/cache/xdg
+    XDG_CACHE_HOME=/data/cache/xdg \
+    OMP_NUM_THREADS=1 \
+    OMP_THREAD_LIMIT=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 \
+    NUMEXPR_MAX_THREADS=1 \
+    VECLIB_MAXIMUM_THREADS=1 \
+    BLIS_NUM_THREADS=1
 
 RUN micromamba install -y -n base -c conda-forge python=3.12 pip && \
     micromamba clean --all --yes

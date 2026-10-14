@@ -256,7 +256,19 @@ def test_archive_renders_yield_to_waiting_previews(tmp_path):
     started = time.monotonic()
     assert scheduler._acquire_for_archive(timeout=0.6) is False
     assert time.monotonic() - started >= 0.5
-    assert not scheduler._render_lock.locked()
+    # RLock has no locked() on Python 3.12; check from a different thread
+    # so a leaked reentrant acquisition cannot make this pass.
+    acquired = []
+
+    def check_unlocked():
+        if scheduler._render_lock.acquire(blocking=False):
+            acquired.append(True)
+            scheduler._render_lock.release()
+
+    checker = threading.Thread(target=check_unlocked)
+    checker.start()
+    checker.join(timeout=5)
+    assert acquired == [True]
     scheduler._preview_waiting = 0
     assert scheduler._acquire_for_archive(timeout=1) is True
     scheduler._render_lock.release()

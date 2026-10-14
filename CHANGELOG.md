@@ -3,6 +3,20 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.7.2] — 2026-10-14
+
+### Fixed
+
+- Serialize GIF/MP4 generation with satellite rendering, including HTTP
+  requests and archive overlays, to avoid concurrent memory-heavy jobs.
+- Limit numerical-library and FFmpeg threads; reserve separate scheduler
+  capacity for downloads and a single media prewarm worker.
+- Add configurable container PID/thread and swap limits, and document
+  Raspberry Pi memory-cgroup recovery and resource verification.
+- Provide a Pi-side setup script with read-only preflight checks, private
+  Compose backups, explicit resource-limit application and guarded rollout
+  with actual cgroup verification.
+
 ## [1.7.1] — 2026-10-13
 
 ### Fixed

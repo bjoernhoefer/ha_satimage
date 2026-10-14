@@ -115,6 +115,218 @@ Manual updates remain available from the installation directory:
 docker compose pull && docker compose up -d
 ```
 
+### Raspberry Pi resource protection and recovery
+
+The image limits OpenMP/BLAS numerical libraries to one thread and FFmpeg
+encoding/filtering to one thread. Satellite rendering, archive overlay updates
+and uncached GIF/MP4 generation (including HTTP requests) share one reentrant
+memory-work lock. Cached animations are served without waiting for that lock.
+The scheduler reserves two download workers and one media worker, separate
+from preview/archive workers, so waiting media work cannot occupy download
+capacity. Downloads can still overlap a render.
+
+Repository Compose defaults are 768 MiB RAM, 1.5 CPUs, no additional swap,
+and 128 PIDs **including threads**. Override them with
+`HA_SATIMAGE_MEM_LIMIT`, `HA_SATIMAGE_CPUS`, `HA_SATIMAGE_PIDS_LIMIT` in the
+host `.env`. The PID ceiling is an initial safety bound, not a measured Pi
+peak; verify it with your enabled sources and history settings. A limit
+prevents host exhaustion but can cause an encoder/render to fail if too low.
+One very large GIF can still exceed the RAM budget; reduce history/image
+size or use MP4 if necessary.
+
+**Image updates do not update the host Compose configuration.** For the
+managed deployment, retain its `ha_satellite` service/image name and mounts.
+Add these keys to that service in its actual host Compose file:
+
+```yaml
+mem_limit: ${HA_SATIMAGE_MEM_LIMIT:-768m}
+memswap_limit: ${HA_SATIMAGE_MEM_LIMIT:-768m}
+cpus: ${HA_SATIMAGE_CPUS:-1.5}
+pids_limit: ${HA_SATIMAGE_PIDS_LIMIT:-128}
+```
+
+#### Pi-side setup/check script (manual administrator access)
+
+The CD job **does run on the Raspberry Pi**, using the
+`[self-hosted, linux, ARM64, deploy-satellite]` runner. However, that runner
+cannot access Docker or change boot/Compose files: it may only invoke the
+host-installed `ha-deploy` helper. The helper performs the rollout and health
+check, not host resource configuration. Do not give the runner unrestricted
+sudo/Docker access to work around this separation.
+
+For one-time host preparation, copy the reviewed
+`scripts/pi_setup.py` from this PR to the Pi and run it as an administrator.
+It requires Python 3 and PyYAML (`sudo apt install python3-yaml` on Raspberry
+Pi OS if missing); it does not require installing the satellite application.
+For example, from your computer, after saving the script locally:
+
+```bash
+scp ./pi_setup.py USER@PI:/tmp/ha-pi-setup.py
+ssh -t USER@PI 'sudo docker inspect -f "{{index .Config.Labels \"com.docker.compose.project.config_files\"}}" ha_satellite'
+```
+
+Use the **absolute host Compose path** from that output below; do not use the
+cloud agent's repository path. The script supports a single Compose file and
+service, and refuses a detected multi-file stack; configure such stacks
+manually. Pause competing automatic deployments before applying or rolling
+out. The default is check-only; it does not pull images, change files or
+start containers:
+
+```bash
+ssh -t USER@PI 'sudo python3 /tmp/ha-pi-setup.py --compose-file /absolute/host/path/docker-compose.yml --service ha_satellite'
+```
+
+An exit code of 1 means a prerequisite/limit is missing; read the `STOP`
+message. Unsupported memory/swap/cgroup settings must be fixed using the
+OS-specific instructions below. The script **never edits boot settings or
+reboots** and currently requires cgroup v2 at `/sys/fs/cgroup`.
+
+Persist the four limits to the actual CD Compose file (confirmation required):
+
+```bash
+ssh -t USER@PI 'sudo python3 /tmp/ha-pi-setup.py --compose-file /absolute/host/path/docker-compose.yml --service ha_satellite --apply'
+```
+
+It validates effective Compose configuration before replacing anything,
+rejects unrelated effective changes, preserves file ownership/permissions
+and saves a private `docker-compose.yml.backup-…` alongside the original.
+YAML comments/formatting are rewritten; environment expressions, mounts,
+image tags and unrelated effective settings are preserved. Matching
+`deploy.resources.limits` entries are updated too. Backups may contain
+credentials: keep them private and never commit them. Repeated application
+with the same settings does not write another backup.
+
+Once host preparation succeeds, merge the PR with green checks; the normal
+`main` pipeline tests, builds/publishes **1.7.2** and deploys via the host
+helper. Do not simultaneously run manual deployment. If CD cannot deploy,
+wait for the image publication and run this single SSH command instead:
+
+```bash
+ssh -t USER@PI 'sudo python3 /tmp/ha-pi-setup.py --compose-file /absolute/host/path/docker-compose.yml --service ha_satellite --apply --rollout --expected-version 1.7.2 --yes'
+```
+
+This pulls the configured image, verifies version and actual kernel limits
+in an isolated probe **before** stopping the service, then recreates it with
+the existing mounts/settings, waits for health and checks its actual cgroup
+limits. If verification after startup fails, it stops the service rather
+than leaving an unsafe workload running; it does not automatically roll
+back to an older unprotected image. It never changes the selected image tag:
+the host must already select `ha_satellite:latest` (or a published 1.7.2
+tag); an old image is refused. For manual repository installations use
+`--service ha_satimage`. `--yes` bypasses confirmation, not safety checks.
+
+After CD, repeat the check-only command to verify actual enforcement. A
+stopped service is reported as awaiting runtime verification, not as proof
+of enforcement. Use the measurements below over multiple scan cycles;
+successful setup/health checks alone do not establish real Pi peak usage.
+
+#### Host memory-cgroup recovery
+
+If Docker says "Your kernel does not support memory limit capabilities …
+Limitation discarded", the configured RAM limit **does not protect the host**.
+Check over SSH:
+
+```bash
+sudo docker info
+cat /proc/cgroups
+cat /proc/cmdline
+findmnt -t cgroup,cgroup2
+```
+
+On Raspberry Pi OS, older/v1 setups can need `cgroup_enable=memory
+cgroup_memory=1` on the **existing single line** in the active boot command
+line file. Identify your OS/kernel and active boot file first; it is commonly
+`/boot/firmware/cmdline.txt` on newer Raspberry Pi OS or `/boot/cmdline.txt` on
+older installations. Back up the active file, use `sudoedit` to append only
+missing parameters without removing existing boot/root settings, and reboot
+in a maintenance window. Do not apply this blindly to other distributions:
+a kernel without memory-controller support needs a supported kernel, and an
+unmounted/misconfigured cgroup hierarchy needs an OS-specific correction.
+
+After reboot, repeat `sudo docker info`. Do not resume heavy work while
+memory-limit warnings persist. Requested values from `docker inspect` alone
+are not proof of enforcement. After creating the container, verify its
+**actual** memory cgroup:
+
+```bash
+CONTAINER=ha_satellite   # use ha_satimage for the repository Compose install
+PID=$(sudo docker inspect -f '{{.State.Pid}}' "$CONTAINER")
+cat "/proc/$PID/cgroup"
+findmnt -t cgroup,cgroup2
+```
+
+For cgroup v2, use the `0::` path in that output under the cgroup2 mount
+(normally `/sys/fs/cgroup`) and read `memory.max`, `memory.swap.max`,
+`pids.max` and `cpu.max`. Defaults should show `805306368`, `0`, `128`,
+and a CPU quota/period ratio of `1.5`, respectively. On v1 use the memory
+controller path/mount and `memory.limit_in_bytes` (and, if supported,
+`memory.memsw.limit_in_bytes`); PID/CPU limits are in their respective
+controllers. An unlimited value means the protection is not active.
+If Docker warns that swap accounting is unsupported, the no-extra-swap
+setting cannot be relied on either.
+
+#### Stop, pull and recreate over SSH
+
+The managed host uses `ha_satellite`; manual repository installs use
+`ha_satimage`. Capture the existing Compose location before stopping:
+
+```bash
+CONTAINER=ha_satellite
+DIR=$(sudo docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$CONTAINER")
+SERVICE=$(sudo docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$CONTAINER")
+sudo docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$CONTAINER"
+sudo docker stop --time 30 "$CONTAINER"
+# Only if graceful stopping fails:
+# sudo docker kill "$CONTAINER"
+cd "$DIR"
+```
+
+Apply the limits above to the host Compose service, then check
+`sudo docker compose config`. If the deployment uses non-default/multiple
+Compose files, supply the same `-f` files reported by `config_files` to
+**all** Compose commands below. Ensure the selected satellite image uses
+`:latest` rather than a pinned version/digest, and pause any competing
+automatic deployment during recovery.
+
+```bash
+sudo docker compose config --images
+sudo docker compose pull "$SERVICE" &&
+sudo docker compose up -d --no-build --pull never \
+  --force-recreate --wait --wait-timeout 180 "$SERVICE"
+sudo docker compose ps "$SERVICE"
+sudo docker compose logs --tail 100 "$SERVICE"
+```
+
+For a private image, first run `sudo docker login ghcr.io -u <username>` and
+enter a `read:packages` token at the password prompt. Do not put the token in
+a command. Bind-mounted configuration/history is preserved; do not use
+`down -v`, remove data directories, or kill unrelated Python processes.
+Pulling `latest` before a new build is published can retrieve the same image.
+
+#### Measure the Pi under real load
+
+After verifying cgroup enforcement, monitor while preview renders, archive
+backfill and desktop/phone GIF/MP4 requests run:
+
+```bash
+sudo docker stats "$CONTAINER"
+# In another SSH terminal:
+sudo docker top "$CONTAINER" -eo pid,ppid,nlwp,pcpu,pmem,args
+free -h
+vmstat 1
+curl --max-time 5 -o /dev/null -sS -w 'health: %{http_code}, %{time_total}s\n' \
+  http://127.0.0.1:6060/healthz
+```
+
+On cgroup v2 also read `memory.peak` and `pids.peak` if your kernel exposes
+them, `memory.events` (particularly `oom`/`oom_kill`), `pids.current`,
+`pids.events`, and `cpu.stat` from the same cgroup directory. Record peak
+RAM/thread counts and health/UI responsiveness over several scan cycles.
+Allow PID headroom for HTTP traffic, render children, FFmpeg and healthchecks;
+investigate rising counts rather than simply raising the cap. Reduce enabled
+sources, archive work or history if the measured workload does not fit.
+These host measurements cannot be substituted by tests on a CI runner.
+
 When migrating, stop and remove any previously installed
 `ha_satimage_watchtower` container. GitHub Actions still publishes images
 for release tags; tag builds do not trigger deployment.

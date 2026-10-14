@@ -34,3 +34,7 @@ services:
     # small hosts such as a Raspberry Pi.
     mem_limit: ${HA_SATIMAGE_MEM_LIMIT:-768m}
     cpus: ${HA_SATIMAGE_CPUS:-1.5}
+    # Includes native threads; tune from measured peak usage on the host.
+    pids_limit: ${HA_SATIMAGE_PIDS_LIMIT:-128}
+    # Do not let this container exhaust host swap (same value as RAM limit).
+    memswap_limit: ${HA_SATIMAGE_MEM_LIMIT:-768m}
