@@ -77,7 +77,10 @@ def test_apply_updates_conflicting_deploy_limits(host_compose, monkeypatch):
     host_compose.write_text(yaml.safe_dump(before))
     monkeypatch.setattr(setup, "effective", config)
     setup.apply_limits(host_compose, "ha_satellite", before)
-    setup.check_limits(config(host_compose, "")["services"]["ha_satellite"])
+    updated = config(host_compose, "")["services"]["ha_satellite"]
+    setup.check_limits(updated)
+    assert updated["deploy"]["resources"]["limits"]["memory"] == str(setup.MEMORY)
+    assert updated["deploy"]["resources"]["limits"]["pids"] == setup.PIDS
 
 
 def test_check_default_does_not_change_files_or_start_container(host_compose, monkeypatch):

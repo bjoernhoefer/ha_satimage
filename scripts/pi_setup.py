@@ -105,8 +105,8 @@ def configured_document(document, service):
     settings = result["services"][service]
     settings.update(LIMITS)
     deploy = settings.get("deploy", {}).get("resources", {}).get("limits", {})
-    for key, value in (("memory", MEMORY), ("cpus", str(CPUS)), ("pids", PIDS)):
-        if key in deploy:
+    for key, value in (("memory", str(MEMORY)), ("cpus", str(CPUS)), ("pids", PIDS)):
+        if key in deploy or key == "pids":
             deploy[key] = value
     return result
 
