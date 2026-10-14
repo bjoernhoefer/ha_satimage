@@ -173,6 +173,52 @@ def test_sync_downloads_only_wanted_chunks_once(tmp_path, monkeypatch):
     assert archive.status()[COLLECTION]["last_error"] is None
 
 
+def test_clear_raw_archive_survives_restart_and_does_not_redownload_old_scan(tmp_path, monkeypatch):
+    from ha_satimage.sources.fci_archive import ClearedCapture
+
+    product = FakeFciProduct("FCI-A", SENSING)
+    products = [product]
+    install_fake_eumdac(monkeypatch, products)
+    archive = FciArchive(tmp_path / "_archive")
+    slot = archive.sync(COLLECTION, CREDS, {36, 37}, retention_hours=12)
+    cutoff = SENSING + timedelta(minutes=1)
+    assert archive.clear(cutoff) == 1
+    assert not slot.path.exists()
+    assert archive.status() == {}
+    restarted = FciArchive(archive.root)
+    with pytest.raises(ClearedCapture):
+        restarted.sync(COLLECTION, CREDS, {36, 37}, retention_hours=12)
+    assert len(product.opened) == 2
+    assert restarted.slots(COLLECTION) == []
+    newer = FakeFciProduct("FCI-B", SENSING + timedelta(minutes=10))
+    products[:] = [newer]
+    assert restarted.sync(COLLECTION, CREDS, {36, 37}, retention_hours=12).product_id == "FCI-B"
+    assert len(newer.opened) == 2
+
+
+def test_cleared_raw_scan_is_no_new_data_not_a_download_error(tmp_path, monkeypatch):
+    from ha_satimage.config import ConfigStore
+    from ha_satimage.scheduler import RenderScheduler
+    from ha_satimage.status import StatusStore
+    from ha_satimage.sources.fci_archive import get_archive
+
+    store = ConfigStore(tmp_path / "config.yaml")
+    config = store.stored().model_copy(deep=True)
+    config.storage.frames_dir = str(tmp_path / "frames")
+    config.sources.get("mtg_fci").enabled = True
+    config.eumetsat = CREDS
+    store.update(config)
+    product = FakeFciProduct("FCI-A", SENSING)
+    install_fake_eumdac(monkeypatch, [product])
+    get_archive(sources.archive_root(store.get())).clear(SENSING)
+    scheduler = RenderScheduler(store, BufferManager(tmp_path / "frames"), StatusStore())
+    assert scheduler.download("mtg_fci") is False
+    assert scheduler.download_status()["mtg_fci"]["last_error"] is None
+    assert product.opened == []
+    with pytest.raises(NoNewData):
+        sources.sync_fci_archive(store.get(), COLLECTION)
+
+
 @pytest.mark.parametrize("offset", [-10, 0, 2, 10])
 def test_download_slot_identity_is_utc_across_timezones(tmp_path, monkeypatch, offset):
     sensing = datetime(2026, 9, 26, 23, 59, 59, 395000, tzinfo=timezone.utc)
@@ -582,6 +628,30 @@ def test_archive_run_prerenders_every_archived_fci_slot(tmp_path, monkeypatch, m
     restarted = RenderScheduler(store, BufferManager(frames), StatusStore())
     assert restarted.archive_capture("mtg_fci", now) == 0
     assert {c[2] for c in calls} == {"cloudtop"} and len(calls) == len(regions)
+
+
+def test_clear_cancels_selected_fci_task_before_it_can_render(tmp_path, monkeypatch):
+    from ha_satimage.config import ConfigStore
+    from ha_satimage.scheduler import RenderScheduler
+    from ha_satimage.status import StatusStore
+
+    store = ConfigStore(tmp_path / "config.yaml")
+    store.update(_fci_config(tmp_path))
+    frames = tmp_path / "frames"
+    slot = write_fci_slot(frames, datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    scheduler = RenderScheduler(store, BufferManager(frames), StatusStore())
+
+    def acquire(timeout):
+        scheduler.clear_archive()
+        return scheduler._render_lock.acquire()
+
+    monkeypatch.setattr(scheduler, "_acquire_for_archive", acquire)
+    monkeypatch.setattr(
+        "ha_satimage.scheduler.render_fci_slot",
+        lambda *a: pytest.fail("selected raw slot was cleared while waiting for the lock"),
+    )
+    assert scheduler.archive_capture("mtg_fci", datetime.now(timezone.utc)) == 0
+    assert not slot.exists()
 
 
 def test_archive_run_for_fci_does_not_run_twice_at_once(tmp_path, monkeypatch):

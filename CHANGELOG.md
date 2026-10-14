@@ -3,6 +3,18 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] — 2026-10-14
+
+### Added
+
+- Add a confirmed "Clear archive" action to delete archived images and FCI
+  raw slots while preserving the normal region history and configuration.
+- Persist a scan-time cutoff so cleared scans are not downloaded or
+  backfilled again, including after restart. Newer scans continue to be
+  archived normally.
+- Coordinate clearing with active downloads and rendering, cancel stale
+  archive work, and report deletion counts through `POST /api/archive/clear`.
+
 ## [1.7.2] — 2026-10-14
 
 ### Fixed

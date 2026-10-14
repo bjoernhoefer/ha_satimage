@@ -1178,6 +1178,50 @@ def test_archive_settings_are_saved(ui, live_server):
     expect(ui.get_by_test_id("renders-summary")).to_contain_text("8 h")
 
 
+@pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
+def test_clear_archive_confirms_deletes_and_preserves_history(request, page_fixture, live_server):
+    import json
+
+    page = request.getfixturevalue(page_fixture)
+    archive = _archive_images(live_server)
+    raw = live_server.data_dir / "frames" / "_archive" / "EO_EUM_DAT_0662" / "20260926T142000Z"
+    raw.mkdir(parents=True)
+    (raw / "chunk_0036.nc").write_bytes(b"raw")
+    (raw / "meta.json").write_text(json.dumps({
+        "product_id": "test", "sensing_start": "2026-09-26T14:20:00+00:00",
+        "sensing_end": "2026-09-26T14:20:00+00:00",
+    }))
+    frames = live_server.ensure_frames("wien", 1)
+    page.goto(live_server.url + "/")
+    page.get_by_test_id("sec-storage-fold").evaluate("(el) => { el.open = true; }")
+    button = page.get_by_test_id("archive-clear")
+    expect(button).to_be_visible()
+    page.once("dialog", lambda dialog: dialog.dismiss())
+    button.click()
+    assert archive.count() == 2
+    assert raw.exists()
+    page.once("dialog", lambda dialog: dialog.accept())
+    button.click()
+    expect(page.get_by_test_id("archive-clear-message")).to_contain_text(
+        "Archive cleared: 2 image(s), 1 raw slot(s)"
+    )
+    expect(page.get_by_test_id("renders-summary")).to_contain_text("0 archived image(s)")
+    assert archive.count() == 0
+    assert not raw.exists()
+    assert live_server.frames("wien") == frames
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+
+
+def test_clear_archive_shows_server_error(ui):
+    ui.route("**/api/archive/clear", lambda route: route.fulfill(
+        status=503, content_type="application/json", body='{"detail":"Render still running"}',
+    ))
+    ui.once("dialog", lambda dialog: dialog.accept())
+    ui.get_by_test_id("archive-clear").click()
+    expect(ui.get_by_test_id("archive-clear-message")).to_contain_text("Failed: Render still running")
+    expect(ui.get_by_test_id("archive-clear")).to_be_enabled()
+
+
 def test_archive_all_now_renders_every_image_type(ui, live_server):
     from ha_satimage.config import default_config
     from ha_satimage.sources import archive_composites

@@ -358,7 +358,7 @@ docker compose up -d
 
 - Semantic version in `src/ha_satimage/__init__.py` (`__version__`) and
   `pyproject.toml`; both must match (`tests/test_version.py`). Current:
-  **1.7.1**.
+  **1.8.0**.
 - Shown in the web UI footer and returned by `GET /api/version`.
 - Releases are git tags `vX.Y.Z`; CI builds them into the image tags
   `X.Y.Z`, `X.Y` and `latest`.
@@ -465,6 +465,7 @@ archive offers JPEG and PNG as well.
 | `GET /api/regions/{region}/archive` | Archive of a region: sources, image types, images (`?source=&composite=`; `slots` = alias of `images`) |
 | `GET /regions/{region}/archive/{source}/{composite}/{slot}.{png\|jpg}` | Archived image from the list of available images (never rendered on request; 404 otherwise) |
 | `POST /api/archive/render` | Archive all enabled sources now (all regions, all image types) |
+| `POST /api/archive/clear` | Delete archived images and FCI raw slots, retain normal history; persist a cutoff so only newer scans are downloaded/archived |
 | `GET /api/logs` | Log entries (`?after=<id>`, `?format=text`) |
 | `GET /live/{region}` | Memorable address: opens the live stream in the browser |
 | `GET /healthz` | Liveness |
