@@ -183,10 +183,6 @@
         <div class="row">
           <button type="button" class="refresh primary" data-region="{{ region.name }}"
                   data-testid="refresh-{{ region.name }}">Refresh now</button>
-          <button type="button" class="open-live" data-region="{{ region.name }}"
-                  data-testid="live-{{ region.name }}">● Live</button>
-          <button type="button" class="open-play" data-region="{{ region.name }}"
-                  data-testid="play-{{ region.name }}">▶ Time-lapse</button>
           <button type="button" class="open-archive" data-region="{{ region.name }}"
                   title="Browse the archive: every source in every image type"
                   data-testid="archive-{{ region.name }}">🗄 Archive</button>
@@ -963,10 +959,6 @@
         }
       });
     });
-    document.querySelectorAll("button.open-live").forEach((b) =>
-      b.addEventListener("click", () => openViewer({ mode: "live", region: b.dataset.region })));
-    document.querySelectorAll("button.open-play").forEach((b) =>
-      b.addEventListener("click", () => openViewer({ mode: "frames", region: b.dataset.region, play: true })));
     document.querySelectorAll("button.open-archive").forEach((b) =>
       b.addEventListener("click", () => openViewer({ mode: "archive", region: b.dataset.region })));
 
