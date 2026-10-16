@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.8.1] — 2026-10-16
+
+### Changed
+
+- Remove the redundant per-region Live and Time-lapse buttons; these views
+  remain available through the viewer and archive.
+
 ## [1.8.0] — 2026-10-14
 
 ### Added

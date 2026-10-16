@@ -68,6 +68,7 @@ def test_page_shows_all_core_sections(ui):
         "region-wien",
         "region-mallorca",
         "refresh-wien",
+        "archive-wien",
         "sources-form",
         "poll-interval",
         "auto-sync-hours",
@@ -78,8 +79,6 @@ def test_page_shows_all_core_sections(ui):
         "storage-path",
         "save-storage",
         "logs",
-        "live-wien",
-        "play-wien",
         "region-source-wien",
         "region-composite-wien",
         "region-borders-wien",
@@ -91,6 +90,8 @@ def test_page_shows_all_core_sections(ui):
         "location-remove-wien",
     ):
         expect(ui.get_by_test_id(testid)).to_be_visible()
+    expect(ui.get_by_test_id("live-wien")).to_have_count(0)
+    expect(ui.get_by_test_id("play-wien")).to_have_count(0)
     expect(ui.get_by_test_id("consumer-key")).to_be_editable()
     expect(ui.get_by_test_id("consumer-secret")).to_be_editable()
     expect(ui.get_by_test_id("consumer-secret")).to_have_attribute("type", "password")
@@ -334,7 +335,8 @@ def test_viewer_zoom_buttons_keys_and_pan(ui, live_server):
 def test_timelapse_plays_through_history(ui, live_server):
     live_server.ensure_frames("wien", 3)
     ui.reload()
-    ui.get_by_test_id("play-wien").click()
+    ui.get_by_test_id("preview-wien").click()
+    ui.get_by_test_id("viewer-play").click()
     expect(ui.get_by_test_id("viewer")).to_be_visible()
     expect(ui.get_by_test_id("viewer-play")).to_have_text("❚❚")
     seen = set()
@@ -351,7 +353,8 @@ def test_timelapse_plays_through_history(ui, live_server):
 def test_live_stream_in_browser(ui, live_server):
     live_server.ensure_frames("wien", 1)
     ui.reload()
-    ui.get_by_test_id("live-wien").click()
+    ui.get_by_test_id("preview-wien").click()
+    ui.get_by_test_id("viewer-mode").click()
     expect(ui.get_by_test_id("viewer")).to_be_visible()
     expect(ui.get_by_test_id("viewer-image")).to_have_attribute("src", re.compile(r"/regions/wien/mjpeg"))
     _image_loaded(ui, "viewer-image")
@@ -410,7 +413,8 @@ def test_live_format_mp4_and_gif(request, page_fixture, live_server):
     ui = request.getfixturevalue(page_fixture)
     live_server.ensure_frames("wien", 2)
     ui.goto(live_server.url + "/")
-    ui.get_by_test_id("live-wien").click()
+    ui.get_by_test_id("preview-wien").click()
+    ui.get_by_test_id("viewer-mode").click()
     fmt = ui.get_by_test_id("viewer-format")
     expect(fmt).to_have_value("mjpeg")
     expect(fmt.locator("option")).to_have_count(3)
