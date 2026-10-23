@@ -190,7 +190,7 @@ def test_scheduler_pauses_queries_and_shows_maintenance_frame(tmp_path, monkeypa
     # During maintenance the Data Store is not queried; regions get the image.
     assert scheduler.download("msg_seviri") is False
     assert source.fetches == 0
-    assert sorted(queued) == ["mallorca", "wien"]
+    assert sorted(queued) == ["europe", "mallorca", "wien"]
     state = scheduler._downloads["msg_seviri"]
     assert state.last_error is None
     assert state.due <= now + timedelta(hours=2)
@@ -296,7 +296,7 @@ def test_source_is_checked_hourly_during_maintenance(tmp_path, monkeypatch, sche
     state.next_probe_at = datetime.now(UTC) - timedelta(seconds=1)
     assert scheduler.download("msg_seviri") is True
     assert source.fetches == 3  # the check's result is used, no second query
-    assert sorted(queued) == ["mallorca", "wien"]
+    assert sorted(queued) == ["europe", "mallorca", "wien"]
     assert state.maintenance is None and state.last_sensing == fresh
     info = scheduler.download_status()["msg_seviri"]["maintenance"]
     assert info["active"] is False and info["ended_early"] is True

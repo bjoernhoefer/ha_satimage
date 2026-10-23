@@ -15,6 +15,7 @@ import math
 from dataclasses import dataclass
 
 KM_PER_DEGREE_LAT = 111.32
+EUROPE_EXTENT = (-25.0, 33.0, 45.0, 72.0)
 # Smallest value below which cos(lat) is no longer used as a divisor
 # (avoids division by (nearly) zero at the poles).
 _MIN_COS_LAT = 1e-6

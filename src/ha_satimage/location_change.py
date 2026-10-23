@@ -27,17 +27,16 @@ from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 
-from ha_satimage.config import AppConfig, RegionConfig, default_composite_for
+from ha_satimage.config import MAX_LOCATIONS, AppConfig, RegionConfig, default_composite_for
+from ha_satimage.geometry import EUROPE_EXTENT
 
 logger = logging.getLogger(__name__)
 
-MAX_LOCATIONS = 4
 DEFAULT_RADIUS_KM = 300.0
 MIN_RADIUS_KM = 25.0
 MAX_RADIUS_KM = 2000.0
 
 # Map of Europe: (lon_min, lat_min, lon_max, lat_max) of the image edges.
-EUROPE_EXTENT = (-25.0, 33.0, 45.0, 72.0)
 MAP_WIDTH = 1400
 # Pixel aspect so that distances look right around the middle latitude.
 _MID_LAT = (EUROPE_EXTENT[1] + EUROPE_EXTENT[3]) / 2
@@ -253,7 +252,7 @@ class SatelliteMap:
 # -- Locations (regions) -----------------------------------------------------------
 def location_key(region: RegionConfig) -> tuple:
     """Everything that defines the image cut-out of a location."""
-    return (region.lat, region.lon, region.radius_km, region.width, region.height)
+    return (region.lat, region.lon, region.radius_km, region.width, region.height, region.lonlat_extent)
 
 
 def reset_regions(old: AppConfig, new: AppConfig) -> list[str]:
@@ -329,7 +328,7 @@ def move_location(config: AppConfig, name: str, payload: dict) -> AppConfig:
     region = config.region(name)
     if region is None:
         raise KeyError(name)
-    moved = region.model_copy(update=_position(payload, region))
+    moved = region.model_copy(update={**_position(payload, region), "lonlat_extent": None})
     return config.model_copy(
         update={"regions": [moved if r.name == name else r for r in config.regions]}
     )

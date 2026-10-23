@@ -97,13 +97,16 @@ def _valid(segment: str) -> bool:
 
 def region_signature(region) -> str:
     """Cut-out of a region; a change invalidates its archived images."""
-    return "|".join(
+    signature = "|".join(
         str(v)
         for v in (
             region.lat, region.lon, region.radius_km,
             region.width, region.height, region.borders, OVERLAY_VERSION,
         )
     )
+    if region.lonlat_extent is not None:
+        signature += "|" + ",".join(str(v) for v in region.lonlat_extent)
+    return signature
 
 
 @dataclass(frozen=True)
@@ -368,7 +371,10 @@ class RenderArchive:
                 return False
             old = current.split("|") if current else []
             new = signature.split("|")
-            same_geometry = len(old) in (5, 6, 7) and old[:5] == new[:5]
+            same_geometry = (
+                len(old) in (5, 6, 7, 8) and old[:5] == new[:5]
+                and old[7:] == new[7:]
+            )
             had_borders = len(old) >= 6 and old[5] == "True"
             has_borders = len(new) >= 6 and new[5] == "True"
             if same_geometry and (has_borders or not had_borders):
@@ -385,9 +391,15 @@ class RenderArchive:
         from PIL import Image, PngImagePlugin
 
         from ha_satimage.media import to_jpeg
-        from ha_satimage.overlay import draw_borders, draw_coastlines
+        from ha_satimage.overlay import (
+            draw_borders,
+            draw_borders_lonlat,
+            draw_coastlines,
+            draw_coastlines_lonlat,
+        )
 
-        lat, lon, radius = map(float, signature.split("|")[:3])
+        fields = signature.split("|")
+        lat, lon, radius = map(float, fields[:3])
         draw = draw_coastlines if had_borders else draw_borders
         updated = 0
         for source, composites in self.combinations(region).items():
@@ -402,7 +414,13 @@ class RenderArchive:
                             )
                             continue
                         image = original.convert("RGB")
-                    draw(image, lat, lon, radius)
+                    if len(fields) == 8:
+                        draw_lonlat = draw_coastlines_lonlat if had_borders else draw_borders_lonlat
+                        draw_lonlat(
+                            image, tuple(float(v) for v in fields[7].split(","))
+                        )
+                    else:
+                        draw(image, lat, lon, radius)
                     metadata = PngImagePlugin.PngInfo()
                     metadata.add_text("archive_overlay", signature)
                     png = io.BytesIO()

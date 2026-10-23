@@ -167,7 +167,7 @@
       {% for region in config.regions %}
       <div class="region-card" data-testid="region-{{ region.name }}" data-region="{{ region.name }}">
         <h3>{{ region.name }}</h3>
-        <div class="muted" data-testid="region-position-{{ region.name }}">{{ region.lat }}, {{ region.lon }} · {{ region.radius_km }} km · {{ region.width }}×{{ region.height }} px</div>
+        <div class="muted" data-testid="region-position-{{ region.name }}">{% if region.lonlat_extent %}European overview · {{ region.lonlat_extent | join(", ") }} · {% else %}{{ region.lat }}, {{ region.lon }} · {{ region.radius_km }} km · {% endif %}{{ region.width }}×{{ region.height }} px</div>
         <div class="row location-actions">
           <button type="button" class="location-edit" data-region="{{ region.name }}"
                   data-testid="location-edit-{{ region.name }}">📍 Change location</button>
@@ -977,9 +977,9 @@
       for (const [name, s] of Object.entries(status)) {
         if (!REGIONS.includes(name)) continue;
         if (s.last_run_at && lastSeenRun[name] !== s.last_run_at) {
-          const first = lastSeenRun[name] === undefined;
           lastSeenRun[name] = s.last_run_at;
-          if (!first) { reloadPreview(name); loadHistory(name); }
+          reloadPreview(name);
+          loadHistory(name);
         }
       }
     }
@@ -1712,8 +1712,15 @@
         cy: (e.lat_max - lat) / latSpan * 100,
       };
     }
-    function placeBox(node, lat, lon, radiusKm) {
+    function placeBox(node, lat, lon, radiusKm, extent) {
       const b = boxPercent(lat, lon, radiusKm);
+      if (extent) {
+        const e = ls.map.extent;
+        b.left = (extent[0] - e.lon_min) / (e.lon_max - e.lon_min) * 100;
+        b.top = (e.lat_max - extent[3]) / (e.lat_max - e.lat_min) * 100;
+        b.width = (extent[2] - extent[0]) / (e.lon_max - e.lon_min) * 100;
+        b.height = (extent[3] - extent[1]) / (e.lat_max - e.lat_min) * 100;
+      }
       Object.assign(node.style, { left: b.left + "%", top: b.top + "%", width: b.width + "%", height: b.height + "%" });
       return b;
     }
@@ -1744,7 +1751,7 @@
       for (const loc of ls.map.locations) {
         if (loc.name === ls.region) continue;
         const box = el("div", { class: "location-box", "data-testid": "location-box-" + loc.name }, el("span", { text: loc.name }));
-        placeBox(box, loc.lat, loc.lon, loc.radius_km);
+        placeBox(box, loc.lat, loc.lon, loc.radius_km, loc.lonlat_extent);
         container.append(box);
       }
     }

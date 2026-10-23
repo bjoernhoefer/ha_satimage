@@ -23,6 +23,9 @@ from ha_satimage.config import (
     AppConfig,
     ArchiveConfig,
     EumetsatCredentials,
+    FCI_COMPOSITES,
+    FCI_HRFI_COLLECTION,
+    FCI_HRFI_COMPOSITES,
     RegionConfig,
     default_config,
 )
@@ -120,7 +123,7 @@ def test_wanted_chunks_is_range_plus_regions():
     config = default_config()
     config.archive = ArchiveConfig(chunk_min=38, chunk_max=40)
     config.regions.append(_region("kapstadt", -33.9, 18.4))
-    assert wanted_chunks(config) == {7, 8, 9, 34, 35, 36, 37, 38, 39, 40}
+    assert wanted_chunks(config) == {7, 8, 9, 32, 33, 34, 35, 36, 37, 38, 39, 40}
 
 
 def test_format_chunks():
@@ -332,6 +335,36 @@ def test_render_fci_slot_reports_missing_chunks(tmp_path, monkeypatch):
         render_fci_slot(slot, _region(), DEFAULT_FCI_COMPOSITE)
     with pytest.raises(RenderError, match="outside"):
         render_fci_slot(slot, _region("tokio", 35.7, 139.7), DEFAULT_FCI_COMPOSITE)
+
+
+@pytest.mark.parametrize(("collection", "composite"), [
+    (COLLECTION, composite) for composite in FCI_COMPOSITES
+] + [
+    (FCI_HRFI_COLLECTION, composite) for composite in FCI_HRFI_COMPOSITES
+])
+def test_europe_overview_fci_variants_use_extent_and_required_chunks(
+    tmp_path, monkeypatch, collection, composite
+):
+    from ha_satimage.config import europe_overview
+
+    overview = europe_overview("mtg_fci")
+    chunks = chunks_for_region(overview)
+    assert chunks == set(range(32, 41))
+    install_fake_eumdac(monkeypatch, [FakeFciProduct("FCI-A", SENSING)])
+    slot = FciArchive(tmp_path).sync(collection, CREDS, chunks, 12)
+    requests = []
+
+    def fake_render(request):
+        requests.append(request)
+        return b"PNG", SENSING
+
+    monkeypatch.setattr("ha_satimage.sources.satpy_render.render_in_subprocess", fake_render)
+    render_fci_slot(slot, overview, composite, collection)
+    [render] = requests
+    assert render.lonlat_extent == (-25, 33, 45, 72)
+    assert render.composite == composite
+    assert render.borders is False
+    assert {chunk_of(filename) for filename in render.filenames} == chunks
 
 
 def test_fci_is_no_placeholder_and_has_own_composites():

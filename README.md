@@ -33,6 +33,24 @@ the web UI (persisted to `<data>/config.yaml`) or set via environment
 variables (`EUMETSAT_CONSUMER_KEY` / `EUMETSAT_CONSUMER_SECRET`, see
 `.env.example`). Environment variables take precedence.
 
+### European overview
+
+The default locations are Vienna (`wien`), Mallorca (`mallorca`) and a
+European overview (`europe`, 25° W–45° E and 33–72° N, 1400×1280 pixels).
+The overview defaults to natural color with infrared clouds at night
+(~3 km), with country and regional borders **off**. Its source, image type,
+borders, history and fullscreen viewer work like the other locations.
+Enable **Download all sources** to archive every supported image variant;
+the archive viewer never renders images on request.
+
+On the first upgrade to 1.9.0 the overview is added if there is a free
+location slot and an enabled satellite source. Existing locations and
+settings are kept. A persisted migration marker prevents it from being
+re-added after removal. With all four slots occupied (or no enabled satellite
+source), the upgrade logs that the overview was not added. Changing its
+location on the map converts it into a normal centre/radius crop and resets
+its history.
+
 ## Deployment with the prebuilt image
 
 The target host needs no source code — only `docker-compose.yml` (and

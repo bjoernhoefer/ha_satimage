@@ -3,6 +3,23 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] — 2026-10-23
+
+### Added
+
+- Add a third location, `europe`, showing the full European overview
+  (25° W–45° E, 33–72° N) with borders off by default. All source-specific
+  image types, history formats and archived variants remain available.
+- Add the overview once on upgrade when a location slot and an enabled
+  satellite source are available. Existing locations are preserved;
+  removing the overview does not recreate it on restart.
+- Cover three-location layouts and overview interactions on desktop and phone.
+
+### Fixed
+
+- Refresh previews and history when the first completed render is observed,
+  including when the page initially loaded before images were ready.
+
 ## [1.8.1] — 2026-10-16
 
 ### Changed

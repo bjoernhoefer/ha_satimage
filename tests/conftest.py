@@ -99,13 +99,14 @@ def start_server(tmp_path: Path) -> Iterator[Callable[..., LiveServer]]:
     """Factory for server instances; ``env`` allows e.g. EUMETSAT overrides."""
     processes: list[subprocess.Popen] = []
 
-    def _start(env: dict[str, str] | None = None) -> LiveServer:
+    def _start(env: dict[str, str] | None = None, config: dict | None = None) -> LiveServer:
         data_dir = tmp_path / f"data{len(processes)}"
         data_dir.mkdir()
         storage_root = tmp_path / f"mnt{len(processes)}"
         storage_root.mkdir()
         (data_dir / "config.yaml").write_text(
-            yaml.safe_dump(_dummy_config(), sort_keys=False), encoding="utf-8"
+            yaml.safe_dump(config if config is not None else _dummy_config(), sort_keys=False),
+            encoding="utf-8",
         )
         port = _free_port()
         server_env = {

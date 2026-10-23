@@ -67,6 +67,7 @@ def test_page_shows_all_core_sections(ui):
         "save-credentials",
         "region-wien",
         "region-mallorca",
+        "region-europe",
         "refresh-wien",
         "archive-wien",
         "sources-form",
@@ -1253,6 +1254,186 @@ def test_archive_all_now_renders_every_image_type(ui, live_server):
     _image_loaded(ui, "viewer-image")
 
 
+@pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
+def test_europe_overview_layout_variants_and_viewer(request, page_fixture, live_server):
+    from ha_satimage.config import COMPOSITES
+
+    page = request.getfixturevalue(page_fixture)
+    live_server.ensure_frames("europe", 2)
+    page.goto(live_server.url + "/")
+    expect(page.get_by_test_id("location-count")).to_contain_text("3 of max. 4")
+    cards = [page.get_by_test_id("region-" + name) for name in ("wien", "mallorca", "europe")]
+    boxes = []
+    for card in cards:
+        expect(card).to_be_visible()
+        boxes.append(card.bounding_box())
+    for i, first in enumerate(boxes):
+        for second in boxes[i + 1:]:
+            assert (
+                first["x"] + first["width"] <= second["x"]
+                or second["x"] + second["width"] <= first["x"]
+                or first["y"] + first["height"] <= second["y"]
+                or second["y"] + second["height"] <= first["y"]
+            )
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+    expect(page.get_by_test_id("region-position-europe")).to_contain_text("European overview")
+    expect(page.get_by_test_id("region-borders-europe")).not_to_be_checked()
+    for name in ("wien", "mallorca"):
+        expect(page.get_by_test_id("region-borders-" + name)).to_be_checked()
+    composite = page.get_by_test_id("region-composite-europe")
+    expect(composite.locator("option")).to_have_count(len(COMPOSITES))
+    for variant in COMPOSITES:
+        composite.select_option(variant)
+        expect(page.get_by_test_id("refresh-message-europe")).to_contain_text("Image type saved")
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            frames = page.request.get(live_server.url + "/api/regions/europe/frames").json()["frames"]
+            if frames and frames[0]["composite"] == variant:
+                break
+            page.wait_for_timeout(100)
+        assert frames and frames[0]["composite"] == variant
+        assert next(r for r in _stored(live_server)["regions"] if r["name"] == "europe")["composite"] == variant
+    _image_loaded(page, "preview-europe")
+    page.get_by_test_id("preview-europe").click()
+    expect(page.get_by_test_id("viewer")).to_be_visible()
+    _viewport_filled(page)
+    for image_format in ("png", "jpg"):
+        page.get_by_test_id("viewer-format").select_option(image_format)
+        _image_loaded(page, "viewer-image")
+    page.get_by_test_id("viewer-mode").click()
+    for image_format in ("mjpeg", "gif", "mp4"):
+        page.get_by_test_id("viewer-format").select_option(image_format)
+        if image_format == "mp4":
+            expect(page.get_by_test_id("viewer-video")).to_be_visible()
+            page.wait_for_function(
+                "() => document.querySelector('[data-testid=\"viewer-video\"]').readyState >= 1"
+            )
+        else:
+            _image_loaded(page, "viewer-image")
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+    page.get_by_test_id("viewer-zoom-in").click()
+    assert _zoom(page) > 1
+    page.get_by_test_id("viewer-zoom-reset").click()
+    assert _zoom(page) == 1
+    page.go_back()
+    expect(page.get_by_test_id("viewer")).to_be_hidden()
+    page.get_by_test_id("api-region").select_option("europe")
+    expect(page.get_by_test_id("api-link-latest")).to_have_attribute("href", "/regions/europe/latest.png")
+    page.reload()
+    expect(page.get_by_test_id("region-composite-europe")).to_have_value("airmass")
+    expect(page.get_by_test_id("region-borders-europe")).not_to_be_checked()
+
+
+@pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
+def test_europe_overview_archive_has_every_variant_and_format(request, page_fixture, live_server):
+    from ha_satimage.config import COMPOSITES
+
+    page = request.getfixturevalue(page_fixture)
+    page.goto(live_server.url + "/")
+    page.get_by_test_id("archive-render-now").click()
+    expect(page.get_by_test_id("archive-render-message")).to_contain_text("Archiving")
+    for variant in COMPOSITES:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            images = page.request.get(
+                live_server.url + "/api/regions/europe/archive?source=dummy&composite=" + variant
+            ).json()["images"]
+            if images and images[0]["available"] and images[0]["jpeg_url"]:
+                break
+            page.wait_for_timeout(100)
+        assert images and images[0]["available"] and images[0]["jpeg_url"]
+    page.get_by_test_id("archive-europe").click()
+    expect(page.get_by_test_id("viewer")).to_be_visible()
+    expect(page.get_by_test_id("viewer-composite").locator("option")).to_have_count(len(COMPOSITES))
+    for variant in COMPOSITES:
+        page.get_by_test_id("viewer-composite").select_option(variant)
+        expect(page.get_by_test_id("viewer-image")).to_have_attribute(
+            "src", re.compile(rf"/regions/europe/archive/dummy/{variant}/")
+        )
+        for image_format in ("png", "jpg"):
+            page.get_by_test_id("viewer-format").select_option(image_format)
+            expect(page.get_by_test_id("viewer-image")).to_have_attribute(
+                "src", re.compile(rf"/regions/europe/archive/dummy/{variant}/.*\.{image_format}")
+            )
+            _image_loaded(page, "viewer-image")
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+    page.reload()
+    expect(page.get_by_test_id("viewer-composite")).to_have_value("airmass")
+    _image_loaded(page, "viewer-image")
+    page.get_by_test_id("viewer-close").click()
+    expect(page.get_by_test_id("viewer")).to_be_hidden()
+
+
+@pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
+def test_europe_overview_borders_and_map_extent(request, page_fixture, live_server):
+    page = request.getfixturevalue(page_fixture)
+    page.goto(live_server.url + "/")
+    page.get_by_test_id("region-borders-europe").check()
+    expect(page.get_by_test_id("refresh-message-europe")).to_contain_text("Country borders enabled")
+    assert next(r for r in _stored(live_server)["regions"] if r["name"] == "europe")["borders"] is True
+    page.reload()
+    expect(page.get_by_test_id("region-borders-europe")).to_be_checked()
+    page.get_by_test_id("region-borders-europe").uncheck()
+    expect(page.get_by_test_id("refresh-message-europe")).to_contain_text("Country borders disabled")
+    page.get_by_test_id("location-add").click()
+    box = page.get_by_test_id("location-box-europe")
+    expect(box).to_be_visible()
+    assert box.evaluate("(el) => [el.style.left, el.style.top, el.style.width, el.style.height]") == [
+        "0%", "0%", "100%", "100%",
+    ]
+    page.get_by_test_id("location-close").click()
+    expect(page.get_by_test_id("location-editor")).to_be_hidden()
+
+
+@pytest.mark.parametrize("page_fixture", ["page", "mobile_page"])
+def test_europe_overview_upgrade_rollout(request, page_fixture, start_server):
+    from ha_satimage.config import default_config
+
+    legacy = default_config().model_dump()
+    legacy.pop("europe_overview_added")
+    legacy["regions"] = legacy["regions"][:2]
+    for region in legacy["regions"]:
+        region["source"] = "dummy"
+    legacy["sources"]["catalog"][-1]["enabled"] = True
+    server = start_server(config=legacy)
+    page = request.getfixturevalue(page_fixture)
+    page.goto(server.url + "/")
+    expect(page.get_by_test_id("location-count")).to_contain_text("3 of max. 4")
+    expect(page.get_by_test_id("region-europe")).to_be_visible()
+    expect(page.get_by_test_id("region-borders-europe")).not_to_be_checked()
+    assert _stored(server)["regions"][:2] == legacy["regions"]
+    assert _stored(server)["europe_overview_added"] is True
+    # The test server blocks real downloads; switch the new location to its test source.
+    page.get_by_test_id("region-source-europe").select_option("dummy")
+    expect(page.get_by_test_id("refresh-message-europe")).to_contain_text("Source saved")
+    expect(page.get_by_test_id("history-item-europe-0")).to_be_visible(timeout=15000)
+    _image_loaded(page, "preview-europe")
+    page.get_by_test_id("preview-europe").click()
+    _image_loaded(page, "viewer-image")
+    _viewport_filled(page)
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+
+
+@pytest.mark.parametrize("page_fixture", ["page", "mobile_page"])
+def test_first_completed_render_refreshes_initially_empty_history(request, page_fixture, live_server):
+    live_server.ensure_frames("europe", 1)
+    page = request.getfixturevalue(page_fixture)
+    first_history = True
+
+    def history(route):
+        nonlocal first_history
+        if first_history:
+            first_history = False
+            route.fulfill(json={"frames": []})
+        else:
+            route.continue_()
+
+    page.route("**/api/regions/europe/frames", history)
+    page.goto(live_server.url + "/")
+    expect(page.get_by_test_id("history-item-europe-0")).to_be_visible(timeout=15000)
+    _image_loaded(page, "preview-europe")
+
+
 # --- Version / language -----------------------------------------------------
 
 def test_app_version_is_shown(ui, live_server):
@@ -1299,7 +1480,7 @@ def _picked(page) -> tuple[float, float]:
 
 
 def test_add_location_by_clicking_on_the_map(ui, live_server):
-    expect(ui.get_by_test_id("location-count")).to_contain_text("2 of max. 4")
+    expect(ui.get_by_test_id("location-count")).to_contain_text("3 of max. 4")
     ui.get_by_test_id("location-add").click()
     editor = ui.get_by_test_id("location-editor")
     expect(editor).to_be_visible()
@@ -1337,7 +1518,7 @@ def test_add_location_by_clicking_on_the_map(ui, live_server):
     # Page reloads with the new location card; it renders immediately.
     expect(ui.get_by_test_id("region-berlin")).to_be_visible()
     expect(editor).to_be_hidden()
-    expect(ui.get_by_test_id("location-count")).to_contain_text("3 of max. 4")
+    expect(ui.get_by_test_id("location-count")).to_contain_text("4 of max. 4")
     berlin = next(r for r in _stored(live_server)["regions"] if r["name"] == "berlin")
     assert abs(berlin["lat"] - 52.52) < 0.1 and abs(berlin["lon"] - 13.405) < 0.1
     assert berlin["radius_km"] == 200
@@ -1361,7 +1542,7 @@ def test_location_entered_as_lat_lon_and_errors_are_shown(ui, live_server):
 
 
 def test_at_most_four_locations_in_the_ui(ui, live_server):
-    for name, lat, lon in (("berlin", 52.5, 13.4), ("rome", 41.9, 12.5)):
+    for name, lat, lon in (("rome", 41.9, 12.5),):
         response = ui.request.post(
             live_server.url + "/api/regions", data={"name": name, "lat": lat, "lon": lon}
         )

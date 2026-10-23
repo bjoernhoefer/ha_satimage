@@ -173,4 +173,10 @@ def draw_borders_lonlat(image, extent, scale: int = 2):
     ], scale)
 
 
+def draw_coastlines_lonlat(image, extent):
+    return _draw_layers(image, [
+        (border_segments_lonlat(extent, *image.size, "coast_lines"), BORDER_COLOR, BORDER_WIDTH),
+    ], scale=2)
+
+
 __all__ = ["border_segments", "border_segments_lonlat", "draw_borders", "draw_borders_lonlat"]

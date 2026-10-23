@@ -132,6 +132,39 @@ def test_region_signature_change_clears_the_archive(tmp_path):
     assert archive.count() == 0
 
 
+def test_overview_extent_change_invalidates_archive(tmp_path):
+    from ha_satimage.config import europe_overview
+
+    archive = RenderArchive(tmp_path)
+    overview = europe_overview()
+    archive.sync_region("europe", region_signature(overview))
+    archive.store("europe", "dummy", "cloudtop", NOW, png())
+    moved = overview.model_copy(update={"lonlat_extent": (-20, 33, 45, 72)})
+    archive.sync_region("europe", region_signature(moved))
+    assert archive.count() == 0
+
+
+def test_overview_overlay_uses_lonlat_projection_and_preserves_scans(tmp_path, monkeypatch):
+    from ha_satimage.config import europe_overview
+
+    archive = RenderArchive(tmp_path)
+    overview = europe_overview()
+    archive.sync_region("europe", region_signature(overview))
+    archive.store("europe", "dummy", "cloudtop", NOW, png("white", 200))
+    calls = []
+    monkeypatch.setattr("ha_satimage.overlay.draw_borders_lonlat", lambda image, extent: calls.append(extent))
+    bordered = overview.model_copy(update={"borders": True})
+    archive.sync_region("europe", region_signature(bordered))
+    assert calls == [overview.lonlat_extent]
+    assert archive.count() == 1
+    assert archive.images("europe", "dummy", "cloudtop")[0].created_at == NOW
+    assert not archive.sync_region("europe", region_signature(bordered))
+    assert len(calls) == 1
+    local = bordered.model_copy(update={"lonlat_extent": None})
+    archive.sync_region("europe", region_signature(local))
+    assert archive.count() == 0
+
+
 @pytest.mark.parametrize("previous_borders", [None, False, True])
 def test_overlay_upgrade_preserves_all_historical_scans(tmp_path, previous_borders):
     archive = RenderArchive(tmp_path)

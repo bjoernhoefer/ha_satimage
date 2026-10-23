@@ -263,6 +263,20 @@ regions stays loadable but cannot grow). New names: `[A-Za-z0-9][A-Za-z0-9_-]{0,
 radius 25–2000 km. A new location takes the source of the first existing
 one and that driver's default image type.
 
+The default third location, `europe`, uses `RegionConfig.lonlat_extent`
+instead of a radius crop: 25° W–45° E, 33–72° N at 1400×1280 pixels
+(even dimensions for MP4). It defaults to
+`natural_color_raw_with_night_ir`, with borders off; all source-specific
+image types and archive variants remain available. Extents must propagate
+to SEVIRI/FCI render requests, FCI chunk selection, location reset detection,
+archive signatures and border overlays. Moving an overview on the map
+clears its extent and converts it to a normal radius crop.
+
+On upgrade, configurations without the `europe_overview_added` marker get
+the overview once if a slot and an enabled satellite source are available.
+The marker is persisted even when no slot/source is available, so deleted
+overviews are not recreated. Existing locations and credentials are kept.
+
 The editor (button "+ Add location" / "📍 Change location", deep link
 `#location=<name|new>`) shows a zoomable map of Europe
 (`EUROPE_EXTENT` = 25° W–45° E, 33–72° N, 1400×1281 px). It is a plain
@@ -358,7 +372,7 @@ docker compose up -d
 
 - Semantic version in `src/ha_satimage/__init__.py` (`__version__`) and
   `pyproject.toml`; both must match (`tests/test_version.py`). Current:
-  **1.8.0**.
+  **1.9.0**.
 - Shown in the web UI footer and returned by `GET /api/version`.
 - Releases are git tags `vX.Y.Z`; CI builds them into the image tags
   `X.Y.Z`, `X.Y` and `latest`.

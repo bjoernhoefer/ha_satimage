@@ -580,7 +580,10 @@ async def location_map_info():
         "outline_url": "/location-map/outline.png",
         "satellite": {**satellite_map.info(), "map_source": entry.id if entry else None},
         "locations": [
-            {"name": r.name, "lat": r.lat, "lon": r.lon, "radius_km": r.radius_km}
+            {
+                "name": r.name, "lat": r.lat, "lon": r.lon, "radius_km": r.radius_km,
+                "lonlat_extent": r.lonlat_extent,
+            }
             for r in config.regions
         ],
     }
