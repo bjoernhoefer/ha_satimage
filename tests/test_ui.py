@@ -1255,6 +1255,34 @@ def test_archive_all_now_renders_every_image_type(ui, live_server):
 
 
 @pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
+def test_region_titles_show_only_names_and_previews_align(request, page_fixture, live_server):
+    page = request.getfixturevalue(page_fixture)
+    page.goto(live_server.url + "/")
+    page.get_by_test_id("location-add").click()
+    page.get_by_test_id("location-name").fill("rome")
+    page.get_by_test_id("location-lat").fill("41.9")
+    page.get_by_test_id("location-lon").fill("12.5")
+    page.get_by_test_id("location-save").click()
+    expect(page.get_by_test_id("region-rome")).to_be_visible()
+
+    names = ("wien", "mallorca", "europe", "rome")
+    preview_positions = []
+    card_to_preview = []
+    for name in names:
+        expect(page.get_by_test_id("region-title-" + name)).to_have_text(name)
+        expect(page.get_by_test_id("region-position-" + name)).to_be_hidden()
+        card = page.get_by_test_id("region-" + name).bounding_box()
+        preview = page.get_by_test_id("preview-" + name).bounding_box()
+        assert card is not None and preview is not None
+        preview_positions.append(preview["y"])
+        card_to_preview.append(preview["y"] - card["y"])
+
+    assert max(card_to_preview) - min(card_to_preview) < 2
+    if page.viewport_size["width"] > 600:
+        assert max(preview_positions[:3]) - min(preview_positions[:3]) < 2
+
+
+@pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
 def test_europe_overview_layout_variants_and_viewer(request, page_fixture, live_server):
     from ha_satimage.config import COMPOSITES
 
@@ -1277,7 +1305,7 @@ def test_europe_overview_layout_variants_and_viewer(request, page_fixture, live_
             )
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
     expect(page.get_by_test_id("region-position-europe")).to_contain_text("European overview")
-    expect(page.get_by_test_id("region-borders-europe")).not_to_be_checked()
+    expect(page.get_by_test_id("region-borders-europe")).to_be_checked()
     for name in ("wien", "mallorca"):
         expect(page.get_by_test_id("region-borders-" + name)).to_be_checked()
     composite = page.get_by_test_id("region-composite-europe")
@@ -1321,7 +1349,7 @@ def test_europe_overview_layout_variants_and_viewer(request, page_fixture, live_
     expect(page.get_by_test_id("api-link-latest")).to_have_attribute("href", "/regions/europe/latest.png")
     page.reload()
     expect(page.get_by_test_id("region-composite-europe")).to_have_value("airmass")
-    expect(page.get_by_test_id("region-borders-europe")).not_to_be_checked()
+    expect(page.get_by_test_id("region-borders-europe")).to_be_checked()
 
 
 @pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
@@ -1368,13 +1396,15 @@ def test_europe_overview_archive_has_every_variant_and_format(request, page_fixt
 def test_europe_overview_borders_and_map_extent(request, page_fixture, live_server):
     page = request.getfixturevalue(page_fixture)
     page.goto(live_server.url + "/")
+    expect(page.get_by_test_id("region-borders-europe")).to_be_checked()
+    assert next(r for r in _stored(live_server)["regions"] if r["name"] == "europe")["borders"] is True
+    page.get_by_test_id("region-borders-europe").uncheck()
+    expect(page.get_by_test_id("refresh-message-europe")).to_contain_text("Country borders disabled")
     page.get_by_test_id("region-borders-europe").check()
     expect(page.get_by_test_id("refresh-message-europe")).to_contain_text("Country borders enabled")
-    assert next(r for r in _stored(live_server)["regions"] if r["name"] == "europe")["borders"] is True
     page.reload()
     expect(page.get_by_test_id("region-borders-europe")).to_be_checked()
     page.get_by_test_id("region-borders-europe").uncheck()
-    expect(page.get_by_test_id("refresh-message-europe")).to_contain_text("Country borders disabled")
     page.get_by_test_id("location-add").click()
     box = page.get_by_test_id("location-box-europe")
     expect(box).to_be_visible()
@@ -1400,7 +1430,7 @@ def test_europe_overview_upgrade_rollout(request, page_fixture, start_server):
     page.goto(server.url + "/")
     expect(page.get_by_test_id("location-count")).to_contain_text("3 of max. 4")
     expect(page.get_by_test_id("region-europe")).to_be_visible()
-    expect(page.get_by_test_id("region-borders-europe")).not_to_be_checked()
+    expect(page.get_by_test_id("region-borders-europe")).to_be_checked()
     assert _stored(server)["regions"][:2] == legacy["regions"]
     assert _stored(server)["europe_overview_added"] is True
     # The test server blocks real downloads; switch the new location to its test source.

@@ -212,7 +212,7 @@ def test_europe_overview_passes_extent_for_every_msg_variant(tmp_path, monkeypat
     [render] = requests
     assert render.lonlat_extent == (-25, 33, 45, 72)
     assert render.composite == composite
-    assert render.borders is False
+    assert render.borders is True
     assert (render.width, render.height) == (1400, 1280)
 
 

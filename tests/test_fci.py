@@ -363,7 +363,7 @@ def test_europe_overview_fci_variants_use_extent_and_required_chunks(
     [render] = requests
     assert render.lonlat_extent == (-25, 33, 45, 72)
     assert render.composite == composite
-    assert render.borders is False
+    assert render.borders is True
     assert {chunk_of(filename) for filename in render.filenames} == chunks
 
 

@@ -38,7 +38,7 @@ variables (`EUMETSAT_CONSUMER_KEY` / `EUMETSAT_CONSUMER_SECRET`, see
 The default locations are Vienna (`wien`), Mallorca (`mallorca`) and a
 European overview (`europe`, 25° W–45° E and 33–72° N, 1400×1280 pixels).
 The overview defaults to natural color with infrared clouds at night
-(~3 km), with country and regional borders **off**. Its source, image type,
+(~3 km), with country and regional borders **on**. Its source, image type,
 borders, history and fullscreen viewer work like the other locations.
 Enable **Download all sources** to archive every supported image variant;
 the archive viewer never renders images on request.

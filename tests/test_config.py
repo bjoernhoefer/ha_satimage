@@ -22,7 +22,7 @@ def test_default_config_has_vienna_mallorca_and_europe():
     names = {r.name for r in config.regions}
     assert names == {"wien", "mallorca", "europe"}
     overview = config.region("europe")
-    assert overview.borders is False
+    assert overview.borders is True
     assert (overview.width, overview.height) == (1400, 1280)
     assert overview.bounding_box().as_tuple() == (33, -25, 72, 45)
     assert overview.composite == "natural_color_raw_with_night_ir"
@@ -154,7 +154,7 @@ def test_upgrade_adds_overview_once_and_preserves_existing_locations(tmp_path, l
     path.write_text(yaml.safe_dump(raw))
     upgraded = loader(path)
     assert [r.model_dump() for r in upgraded.regions[:2]] == raw["regions"]
-    assert upgraded.region("europe").borders is False
+    assert upgraded.region("europe").borders is True
     assert yaml.safe_load(path.read_text())["europe_overview_added"] is True
     assert len(loader(path).regions) == 3
     upgraded.regions = upgraded.regions[:2]

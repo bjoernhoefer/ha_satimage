@@ -443,7 +443,7 @@ def europe_overview(source: str = "msg_seviri") -> RegionConfig:
         height=1280,
         composite="natural_color_raw_with_night_ir",
         source=source,
-        borders=False,
+        borders=True,
         lonlat_extent=EUROPE_EXTENT,
     )
 
@@ -525,7 +525,7 @@ def _upgrade_config(raw: dict[str, Any], path: Path) -> AppConfig:
                 if entry.driver == "mtg_fci":
                     overview.composite = default_composite_for(entry.driver, entry.collection)
                 config.regions.append(overview)
-                logger.info("Configuration upgrade: added European overview (borders off)")
+                logger.info("Configuration upgrade: added European overview (borders on)")
             else:
                 logger.info("Configuration upgrade: no enabled satellite source for European overview")
         else:

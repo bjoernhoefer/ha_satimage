@@ -166,8 +166,8 @@
     <div class="regions">
       {% for region in config.regions %}
       <div class="region-card" data-testid="region-{{ region.name }}" data-region="{{ region.name }}">
-        <h3>{{ region.name }}</h3>
-        <div class="muted" data-testid="region-position-{{ region.name }}">{% if region.lonlat_extent %}European overview · {{ region.lonlat_extent | join(", ") }} · {% else %}{{ region.lat }}, {{ region.lon }} · {{ region.radius_km }} km · {% endif %}{{ region.width }}×{{ region.height }} px</div>
+        <h3 data-testid="region-title-{{ region.name }}">{{ region.name }}</h3>
+        <div hidden data-testid="region-position-{{ region.name }}">{% if region.lonlat_extent %}European overview · {{ region.lonlat_extent | join(", ") }} · {% else %}{{ region.lat }}, {{ region.lon }} · {{ region.radius_km }} km · {% endif %}{{ region.width }}×{{ region.height }} px</div>
         <div class="row location-actions">
           <button type="button" class="location-edit" data-region="{{ region.name }}"
                   data-testid="location-edit-{{ region.name }}">📍 Change location</button>

@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.9.1] — 2026-10-23
+
+### Changed
+
+- Align region preview images consistently, including the European overview
+  and additional locations.
+- Show only the location name above each preview, without coordinates,
+  radius or image dimensions.
+- Enable country and regional borders by default for the European overview.
+
 ## [1.9.0] — 2026-10-23
 
 ### Added

@@ -148,7 +148,7 @@ def test_overview_overlay_uses_lonlat_projection_and_preserves_scans(tmp_path, m
     from ha_satimage.config import europe_overview
 
     archive = RenderArchive(tmp_path)
-    overview = europe_overview()
+    overview = europe_overview().model_copy(update={"borders": False})
     archive.sync_region("europe", region_signature(overview))
     archive.store("europe", "dummy", "cloudtop", NOW, png("white", 200))
     calls = []
