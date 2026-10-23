@@ -19,7 +19,7 @@ import pytest
 
 from ha_satimage import sources
 from ha_satimage.buffer import BufferManager
-from ha_satimage.config import AppConfig, ConfigStore, EumetsatCredentials, default_config
+from ha_satimage.config import COMPOSITES, AppConfig, ConfigStore, EumetsatCredentials, default_config
 from ha_satimage.scheduler import RenderScheduler
 from ha_satimage.sources import (
     MsgSeviriSource,
@@ -192,6 +192,28 @@ def test_msg_seviri_skips_already_rendered_product(tmp_path, monkeypatch, config
     monkeypatch.setattr(sources, "_product_cache", lambda: StubCache(product))
     with pytest.raises(NoNewData):
         MsgSeviriSource().render(config.regions[0], config, SENSING)
+
+
+@pytest.mark.parametrize("composite", list(COMPOSITES))
+def test_europe_overview_passes_extent_for_every_msg_variant(tmp_path, monkeypatch, composite):
+    config = default_config()
+    region = config.region("europe")
+    region.composite = composite
+    product = Product("MSG4-A", SENSING, tmp_path / "a.nat")
+    monkeypatch.setattr(sources, "_product_cache", lambda: StubCache(product))
+    requests = []
+
+    def fake_render(request):
+        requests.append(request)
+        return b"PNG", SENSING
+
+    monkeypatch.setattr("ha_satimage.sources.satpy_render.render_in_subprocess", fake_render)
+    MsgSeviriSource().render(region, config)
+    [render] = requests
+    assert render.lonlat_extent == (-25, 33, 45, 72)
+    assert render.composite == composite
+    assert render.borders is False
+    assert (render.width, render.height) == (1400, 1280)
 
 
 def test_msg_seviri_maps_errors_to_render_error(tmp_path, monkeypatch, config):
@@ -591,7 +613,7 @@ def test_download_follows_cycle_and_triggers_renders_only_for_new_data(tmp_path,
     monkeypatch.setattr(scheduler, "_queue_render", queued.append)
 
     assert scheduler.download("msg_seviri") is True
-    assert sorted(queued) == ["mallorca", "wien"]
+    assert sorted(queued) == ["europe", "mallorca", "wien"]
     state = scheduler._downloads["msg_seviri"]
     # Next download: sensing end + cycle + delay = now + 5 min.
     assert _close(state.due, source.sensing + timedelta(minutes=8))
@@ -622,7 +644,7 @@ def test_download_follows_cycle_and_triggers_renders_only_for_new_data(tmp_path,
     # New acquisition: regions are rendered.
     source.sensing = now
     assert scheduler.download("msg_seviri") is True
-    assert sorted(queued) == ["mallorca", "wien"]
+    assert sorted(queued) == ["europe", "mallorca", "wien"]
 
     # Error: no crash, retry after 5 min at the latest.
     source.error = RenderError("401 Unauthorized")

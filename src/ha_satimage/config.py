@@ -10,6 +10,8 @@ written back to it.
 
 from __future__ import annotations
 
+import logging
+import math
 import os
 import threading
 from pathlib import Path
@@ -18,7 +20,9 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from ha_satimage.geometry import bounding_box
+from ha_satimage.geometry import EUROPE_EXTENT, BoundingBox, bounding_box
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH_ENV = "HA_SATIMAGE_CONFIG"
 DEFAULT_CONFIG_PATH = "/data/config.yaml"
@@ -141,6 +145,7 @@ DOWNLOAD_DRIVERS = ("msg_seviri", "mtg_fci")
 
 # Default frames in the ring buffer: corresponds (by default) to 60 minutes of history.
 DEFAULT_HISTORY_MINUTES = 60
+MAX_LOCATIONS = 4
 
 
 def config_path() -> Path:
@@ -176,6 +181,20 @@ class RegionConfig(BaseModel):
     max_frames: int | None = None
     # Draw country borders into the image (Natural Earth 1:10m, see overlay.py).
     borders: bool = True
+    lonlat_extent: tuple[float, float, float, float] | None = None
+
+    @field_validator("lonlat_extent")
+    @classmethod
+    def _validate_extent(
+        cls, value: tuple[float, float, float, float] | None
+    ) -> tuple[float, float, float, float] | None:
+        if value is not None:
+            west, south, east, north = value
+            if not all(math.isfinite(v) for v in value) or not (
+                -180 <= west < east <= 180 and -90 <= south < north <= 90
+            ):
+                raise ValueError("Invalid longitude/latitude extent")
+        return value
 
     @field_validator("name")
     @classmethod
@@ -187,6 +206,9 @@ class RegionConfig(BaseModel):
         return value
 
     def bounding_box(self):
+        if self.lonlat_extent is not None:
+            west, south, east, north = self.lonlat_extent
+            return BoundingBox(south, west, north, east)
         return bounding_box(self.lat, self.lon, self.radius_km)
 
     def effective_max_frames(
@@ -374,6 +396,7 @@ class ServerConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    europe_overview_added: bool = True
     eumetsat: EumetsatCredentials = Field(default_factory=EumetsatCredentials)
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
     history: HistoryConfig = Field(default_factory=HistoryConfig)
@@ -410,8 +433,23 @@ class AppConfig(BaseModel):
         return AppConfig(**data)
 
 
+def europe_overview(source: str = "msg_seviri") -> RegionConfig:
+    return RegionConfig(
+        name="europe",
+        lat=52.5,
+        lon=10,
+        radius_km=2000,
+        width=1400,
+        height=1280,
+        composite="natural_color_raw_with_night_ir",
+        source=source,
+        borders=False,
+        lonlat_extent=EUROPE_EXTENT,
+    )
+
+
 def default_config() -> AppConfig:
-    """Default configuration with two preconfigured example regions."""
+    """Default configuration with two local regions and a European overview."""
     return AppConfig(
         regions=[
             RegionConfig(
@@ -430,6 +468,7 @@ def default_config() -> AppConfig:
                 composite=DEFAULT_COMPOSITE,
                 source="msg_seviri",
             ),
+            europe_overview(),
         ]
     )
 
@@ -466,10 +505,33 @@ def load_config(path: Path | None = None) -> AppConfig:
     resolved = path or config_path()
     if resolved.exists():
         raw: dict[str, Any] = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
-        config = AppConfig(**raw)
+        config = _upgrade_config(raw, resolved)
     else:
         config = default_config()
     return _apply_env_overrides(config)
+
+
+def _upgrade_config(raw: dict[str, Any], path: Path) -> AppConfig:
+    config = AppConfig(**raw)
+    if "europe_overview_added" not in raw:
+        if config.region("europe") is None and len(config.regions) < MAX_LOCATIONS:
+            candidates = [
+                entry for entry in config.sources.catalog
+                if entry.enabled and entry.driver in ("msg_seviri", "mtg_fci")
+            ]
+            if candidates:
+                entry = candidates[0]
+                overview = europe_overview(entry.id)
+                if entry.driver == "mtg_fci":
+                    overview.composite = default_composite_for(entry.driver, entry.collection)
+                config.regions.append(overview)
+                logger.info("Configuration upgrade: added European overview (borders off)")
+            else:
+                logger.info("Configuration upgrade: no enabled satellite source for European overview")
+        else:
+            logger.info("Configuration upgrade: European overview exists or all location slots are used")
+        save_config(config, path)
+    return config
 
 
 def save_config(config: AppConfig, path: Path | None = None) -> None:
@@ -500,7 +562,7 @@ class ConfigStore:
     def _load_stored(self) -> AppConfig:
         if self._path.exists():
             raw: dict[str, Any] = yaml.safe_load(self._path.read_text(encoding="utf-8")) or {}
-            return AppConfig(**raw)
+            return _upgrade_config(raw, self._path)
         return default_config()
 
     @property

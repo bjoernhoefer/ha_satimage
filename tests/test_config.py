@@ -17,10 +17,15 @@ from ha_satimage.config import (
 )
 
 
-def test_default_config_has_vienna_and_mallorca():
+def test_default_config_has_vienna_mallorca_and_europe():
     config = default_config()
     names = {r.name for r in config.regions}
-    assert names == {"wien", "mallorca"}
+    assert names == {"wien", "mallorca", "europe"}
+    overview = config.region("europe")
+    assert overview.borders is False
+    assert (overview.width, overview.height) == (1400, 1280)
+    assert overview.bounding_box().as_tuple() == (33, -25, 72, 45)
+    assert overview.composite == "natural_color_raw_with_night_ir"
 
 
 def test_region_bounding_box_uses_center_and_radius():
@@ -135,7 +140,73 @@ def test_save_and_load_roundtrip(tmp_path: Path):
 def test_load_config_returns_default_when_missing(tmp_path: Path):
     path = tmp_path / "does-not-exist.yaml"
     config = load_config(path)
-    assert len(config.regions) == 2
+    assert len(config.regions) == 3
+
+
+@pytest.mark.parametrize("loader", [load_config, lambda path: ConfigStore(path).stored()])
+def test_upgrade_adds_overview_once_and_preserves_existing_locations(tmp_path, loader):
+    import yaml
+
+    path = tmp_path / "config.yaml"
+    raw = default_config().model_dump()
+    raw.pop("europe_overview_added")
+    raw["regions"] = raw["regions"][:2]
+    path.write_text(yaml.safe_dump(raw))
+    upgraded = loader(path)
+    assert [r.model_dump() for r in upgraded.regions[:2]] == raw["regions"]
+    assert upgraded.region("europe").borders is False
+    assert yaml.safe_load(path.read_text())["europe_overview_added"] is True
+    assert len(loader(path).regions) == 3
+    upgraded.regions = upgraded.regions[:2]
+    save_config(upgraded, path)
+    assert loader(path).region("europe") is None
+
+
+@pytest.mark.parametrize("reason", ["full", "exists", "disabled", "fci", "custom-source"])
+def test_upgrade_respects_location_limit_names_and_sources(tmp_path, reason):
+    import yaml
+
+    from ha_satimage.config import DEFAULT_FCI_COMPOSITE
+
+    path = tmp_path / "config.yaml"
+    raw = default_config().model_dump()
+    raw.pop("europe_overview_added")
+    if reason != "exists":
+        raw["regions"] = raw["regions"][:2]
+    if reason == "full":
+        raw["regions"] += [
+            {**raw["regions"][0], "name": name} for name in ("berlin", "rome")
+        ]
+    if reason in ("disabled", "fci"):
+        for entry in raw["sources"]["catalog"]:
+            entry["enabled"] = reason == "fci" and entry["id"] == "mtg_fci"
+    if reason == "custom-source":
+        raw["sources"]["catalog"] = [
+            {"id": "custom", "driver": "msg_seviri", "enabled": True}
+        ]
+        for region in raw["regions"]:
+            region["source"] = "custom"
+    path.write_text(yaml.safe_dump(raw))
+    upgraded = load_config(path)
+    assert [r.model_dump() for r in upgraded.regions[:len(raw["regions"])]] == raw["regions"]
+    if reason in ("full", "disabled"):
+        assert upgraded.region("europe") is None
+    elif reason == "fci":
+        assert upgraded.region("europe").source == "mtg_fci"
+        assert upgraded.region("europe").composite == DEFAULT_FCI_COMPOSITE
+    elif reason == "custom-source":
+        assert upgraded.region("europe").source == "custom"
+    else:
+        assert len(upgraded.regions) == 3
+
+
+@pytest.mark.parametrize("extent", [
+    (-25, 72, 45, 33), (45, 33, -25, 72), (-181, 33, 45, 72),
+    (-25, 33, 45, 91), (float("nan"), 33, 45, 72),
+])
+def test_region_rejects_invalid_extent(extent):
+    with pytest.raises(ValueError, match="extent"):
+        RegionConfig(name="test", lat=0, lon=0, radius_km=100, lonlat_extent=extent)
 
 
 def test_env_overrides_take_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

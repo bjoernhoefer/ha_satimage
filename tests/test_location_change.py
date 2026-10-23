@@ -265,7 +265,7 @@ def test_add_location_uses_defaults_and_validates():
 
 def test_at_most_four_locations():
     config = default_config()
-    for name in ("a", "b"):
+    for name in ("a",):
         config = lc.add_location(config, {"name": name, "lat": 50, "lon": 10})
     assert len(config.regions) == lc.MAX_LOCATIONS == 4
     with pytest.raises(lc.LocationError, match="At most 4"):
@@ -296,12 +296,19 @@ def test_move_and_remove_location_and_reset_detection():
     ]})
     assert lc.reset_regions(config, recolored) == []
     removed = lc.remove_location(config, "mallorca")
-    assert [r.name for r in removed.regions] == ["wien"]
+    assert [r.name for r in removed.regions] == ["wien", "europe"]
     assert lc.reset_regions(config, removed) == ["mallorca"]
     with pytest.raises(KeyError):
         lc.move_location(config, "nowhere", {"lat": 1, "lon": 1})
     with pytest.raises(KeyError):
         lc.remove_location(config, "nowhere")
+
+
+def test_moving_overview_converts_to_local_crop_and_resets_history():
+    config = default_config()
+    moved = lc.move_location(config, "europe", {"lat": 52.5, "lon": 10, "radius_km": 2000})
+    assert moved.region("europe").lonlat_extent is None
+    assert lc.reset_regions(config, moved) == ["europe"]
 
 
 # -- API ---------------------------------------------------------------------------
@@ -314,7 +321,8 @@ def test_location_map_api(live_server):
     assert info["max_locations"] == 4
     assert (info["width"], info["height"]) == (lc.MAP_WIDTH, lc.MAP_HEIGHT)
     assert info["extent"]["lon_min"] == lc.EUROPE_EXTENT[0]
-    assert {loc["name"] for loc in info["locations"]} == {"wien", "mallorca"}
+    assert {loc["name"] for loc in info["locations"]} == {"wien", "mallorca", "europe"}
+    assert next(loc for loc in info["locations"] if loc["name"] == "europe")["lonlat_extent"] == list(lc.EUROPE_EXTENT)
     assert info["satellite"]["available"] is False
     outline = httpx.get(f"{live_server.url}{info['outline_url']}")
     assert outline.status_code == 200 and outline.headers["content-type"] == "image/png"
@@ -331,11 +339,11 @@ def test_add_move_remove_locations_via_api(live_server):
     added = httpx.post(f"{url}/api/regions", json={"name": "berlin", "lat": 52.52, "lon": 13.405, "radius_km": 200})
     assert added.status_code == 200, added.text
     assert added.json()["source"] == "dummy"
-    assert [r["name"] for r in _stored(live_server)["regions"]] == ["wien", "mallorca", "berlin"]
+    assert [r["name"] for r in _stored(live_server)["regions"]] == ["wien", "mallorca", "europe", "berlin"]
     live_server.ensure_frames("berlin", 1)
 
     assert httpx.post(f"{url}/api/regions", json={"name": "berlin", "lat": 1, "lon": 1}).status_code == 400
-    assert httpx.post(f"{url}/api/regions", json={"name": "graz", "lat": 47.07, "lon": 15.44}).status_code == 200
+    assert httpx.post(f"{url}/api/regions", json={"name": "graz", "lat": 47.07, "lon": 15.44}).status_code == 400
     fifth = httpx.post(f"{url}/api/regions", json={"name": "rome", "lat": 41.9, "lon": 12.5})
     assert fifth.status_code == 400 and "At most 4" in fifth.json()["detail"]
     # The limit also applies to the general configuration endpoint.
@@ -354,12 +362,12 @@ def test_add_move_remove_locations_via_api(live_server):
     assert httpx.put(f"{url}/api/regions/nowhere", json={"lat": 1, "lon": 1}).status_code == 404
     assert httpx.put(f"{url}/api/regions/wien", json={"lat": 100, "lon": 1}).status_code == 400
 
-    assert httpx.delete(f"{url}/api/regions/graz").status_code == 200
-    assert "graz" not in [r["name"] for r in _stored(live_server)["regions"]]
-    assert httpx.get(f"{url}/api/regions/graz/frames").status_code == 404
-    assert httpx.delete(f"{url}/api/regions/graz").status_code == 404
+    assert httpx.delete(f"{url}/api/regions/berlin").status_code == 200
+    assert "berlin" not in [r["name"] for r in _stored(live_server)["regions"]]
+    assert httpx.get(f"{url}/api/regions/berlin/frames").status_code == 404
+    assert httpx.delete(f"{url}/api/regions/berlin").status_code == 404
     logs = httpx.get(f"{url}/api/logs?format=text").text
-    assert "Location berlin added" in logs and "Location graz removed" in logs
+    assert "Location berlin added" in logs and "Location berlin removed" in logs
 
 
 def test_moving_a_location_drops_its_frames_on_disk(live_server):
