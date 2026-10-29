@@ -92,25 +92,46 @@ updates, `docker compose pull` / `up -d` and container recreation.
 ### Automatic updates (GitHub Actions)
 
 The rollout is **tests (including UI click tests) → multi-arch image in
-GHCR → deploy job on a self-hosted runner → health check / rollback**.
+GHCR → deploy job per selected host → health check / rollback**.
 `.github/workflows/build.yml` deploys only pushes to `main` and manual
 `workflow_dispatch` runs on `main`, never pull requests or release tags.
-The runner must have labels `self-hosted`, `linux`, `ARM64` and
-`deploy-satellite`. Fork PRs require manual approval before their workflows
-run; PR builds stay on GitHub-hosted runners.
+Fork PRs require manual approval before their workflows run; PR builds stay
+on GitHub-hosted runners.
 
-Host setup is separate from this repository: the runner runs as the
+#### Rollout targets
+
+| Target | Runner labels | `ha-deploy` runs as | Concurrency group |
+|---|---|---|---|
+| `pi` | `self-hosted`, `linux`, `ARM64`, `deploy-satellite` | `bjoern` | `deploy-ha_satellite` |
+| `azure` | `self-hosted`, `linux`, `X64`, `deploy-satellite-azure` | `ha-satimage` | `deploy-ha_satellite-azure` |
+
+- **Automatic (push to `main`):** repository variable `DEPLOY_TARGETS`
+  (*Settings → Secrets and variables → Actions → Variables*): `pi`,
+  `azure`, `both`, `none`, or a comma list such as `pi,azure`. Unset =
+  `pi` (previous behaviour).
+- **Manual:** *Actions → Build and publish container image → Run workflow*
+  on `main`, input `deploy_targets` (`configured` uses the variable).
+
+Unknown values fail the run before any host is touched. Every target gets
+the same image digest, deploys independently (one failing host does not
+cancel the other) and is serialized per host. A target whose runner is
+offline stays queued, so only select hosts whose runner and `ha-deploy`
+helper are installed. The Azure host is provisioned in the private
+infrastructure repository `bjoernhoefer/az_universal_vm`.
+
+Host setup is separate from this repository: each runner runs as the
 dedicated user `gh-deploy`, without Docker access, and may only invoke
-`/usr/local/bin/ha-deploy` via sudo as `bjoern`. The deploy job does not
+`/usr/local/bin/ha-deploy` via sudo as the target's deploy user (see table).
+The deploy job does not
 check out the repository or execute third-party actions on the host.
 Before deployment it checks the current `main` SHA and skips superseded
-builds. Deployments are serialized and use the validated, immutable image
+builds. Deployments are serialized per host and use the validated, immutable image
 digest from the build job.
 
-The host deployment stack identifier remains `ha_satellite`, as registered
+The host deployment stack identifier is `ha_satellite` on every host, as registered
 in the separately installed `ha-deploy` helper; it is not the image or
-Compose service name. The workflow retains the `deploy-ha_satellite`
-concurrency group and passes this stack identifier with the legacy
+Compose service name. The Pi keeps the `deploy-ha_satellite`
+concurrency group; every host receives this stack identifier with the legacy
 `ghcr.io/bjoernhoefer/ha_satellite` image digest required by the helper's
 image allowlist. The build publishes the same image and digest under both
 `ha_satimage` and `ha_satellite`; normal pulls continue to use `ha_satimage`.

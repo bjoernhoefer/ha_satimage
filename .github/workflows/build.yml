@@ -6,7 +6,13 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      deploy_targets:
+        description: "Rollout targets (configured = repository variable DEPLOY_TARGETS, default pi)"
+        type: choice
+        options: [configured, pi, azure, both, none]
+        default: configured
 
 env:
   REGISTRY: ghcr.io
@@ -76,13 +82,76 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy:
-    needs: build
+  targets:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: [self-hosted, linux, ARM64, deploy-satellite]
+    runs-on: ubuntu-latest
     permissions: {}
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Resolve rollout targets
+        id: resolve
+        env:
+          REQUESTED: ${{ inputs.deploy_targets }}
+          CONFIGURED: ${{ vars.DEPLOY_TARGETS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -f
+          requested="${REQUESTED:-configured}"
+          if [[ "$requested" == "configured" ]]; then
+            requested="${CONFIGURED:-pi}"
+          fi
+          requested="${requested,,}"
+          if [[ ! "$requested" =~ ^[a-z,[:space:]]+$ ]]; then
+            echo "::error::Invalid rollout targets (allowed: pi, azure, both, none; comma-separated)"
+            exit 1
+          fi
+          pi=false
+          azure=false
+          for target in ${requested//,/ }; do
+            case "$target" in
+              pi) pi=true ;;
+              azure) azure=true ;;
+              both) pi=true; azure=true ;;
+              none) ;;
+              *)
+                echo "::error::Unknown rollout target '$target' (allowed: pi, azure, both, none)"
+                exit 1
+                ;;
+            esac
+          done
+          # Fixed allowlist: runner labels, sudo user and concurrency per host.
+          entries=()
+          names=()
+          if [[ "$pi" == true ]]; then
+            names+=(pi)
+            entries+=('{"name":"pi","runs_on":["self-hosted","linux","ARM64","deploy-satellite"],"deploy_user":"bjoern","concurrency":"deploy-ha_satellite"}')
+          fi
+          if [[ "$azure" == true ]]; then
+            names+=(azure)
+            entries+=('{"name":"azure","runs_on":["self-hosted","linux","X64","deploy-satellite-azure"],"deploy_user":"ha-satimage","concurrency":"deploy-ha_satellite-azure"}')
+          fi
+          matrix="[$(IFS=,; echo "${entries[*]}")]"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          summary="Rollout targets: ${names[*]:-none}"
+          echo "$summary"
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            echo "$summary" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  deploy:
+    needs: [build, targets]
+    if: needs.targets.outputs.matrix != '[]'
+    name: deploy (${{ matrix.target.name }})
+    runs-on: ${{ matrix.target.runs_on }}
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.matrix) }}
     concurrency:
-      group: deploy-ha_satellite
+      group: ${{ matrix.target.concurrency }}
       cancel-in-progress: false
     timeout-minutes: 20
     steps:
@@ -110,6 +179,7 @@ jobs:
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
           IMAGE: ${{ env.REGISTRY }}/${{ env.DEPLOY_IMAGE_NAME }}
+          DEPLOY_USER: ${{ matrix.target.deploy_user }}
         shell: bash
         run: |
           set -euo pipefail
@@ -117,7 +187,11 @@ jobs:
             echo "::error::Invalid image digest"
             exit 1
           fi
-          sudo -n -u bjoern /usr/local/bin/ha-deploy ha_satellite "${IMAGE}@${DIGEST}" "${GITHUB_SHA}"
+          if [[ ! "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+            echo "::error::Invalid deploy user"
+            exit 1
+          fi
+          sudo -n -u "$DEPLOY_USER" /usr/local/bin/ha-deploy ha_satellite "${IMAGE}@${DIGEST}" "${GITHUB_SHA}"
 
   test:
     runs-on: ubuntu-latest

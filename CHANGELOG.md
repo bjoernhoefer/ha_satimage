@@ -3,6 +3,17 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] — 2026-10-29
+
+### Added
+
+- Selectable rollout targets: the Raspberry Pi (`pi`) and the Azure VM
+  (`azure`, runner labels `self-hosted`, `linux`, `X64`,
+  `deploy-satellite-azure`). Pushes to `main` deploy to the repository
+  variable `DEPLOY_TARGETS` (`pi`, `azure`, `both`, `none`; unset = `pi`),
+  manual runs choose `deploy_targets`. Every target receives the same image
+  digest, deploys independently and is serialized per host.
+
 ## [1.9.0] — 2026-10-23
 
 ### Added
