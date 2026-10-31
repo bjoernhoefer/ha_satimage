@@ -1,5 +1,6 @@
 """Check the deployment contract without accessing a deployment host."""
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -19,7 +20,27 @@ def deploy_job():
     return workflow["jobs"]["deploy"]
 
 
-def test_deployment_contract(deploy_job):
+@pytest.fixture
+def targets_job():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build.yml").read_text())
+    return workflow["jobs"]["targets"]
+
+
+PI = {
+    "name": "pi",
+    "runs_on": ["self-hosted", "linux", "ARM64", "deploy-satellite"],
+    "deploy_user": "bjoern",
+    "concurrency": "deploy-ha_satellite",
+}
+AZURE = {
+    "name": "azure",
+    "runs_on": ["self-hosted", "linux", "X64", "deploy-satellite-azure"],
+    "deploy_user": "ha-satimage",
+    "concurrency": "deploy-ha_satellite-azure",
+}
+
+
+def test_deployment_contract(deploy_job, targets_job):
     workflow = yaml.safe_load((ROOT / ".github/workflows/build.yml").read_text())
     build = workflow["jobs"]["build"]
     assert workflow["env"]["IMAGE_NAME"] == "${{ github.repository_owner }}/ha_satimage"
@@ -29,15 +50,31 @@ def test_deployment_contract(deploy_job):
         step.get("id") == "build" and step["uses"] == "docker/build-push-action@v6"
         for step in build["steps"]
     )
-    assert deploy_job["needs"] == "build"
-    assert deploy_job["if"] == (
+    dispatch = workflow[True]["workflow_dispatch"]["inputs"]["deploy_targets"]
+    assert dispatch["options"] == ["configured", "pi", "azure", "both", "none"]
+    assert dispatch["default"] == "configured"
+    assert targets_job["if"] == (
         "github.ref == 'refs/heads/main' && "
         "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
     )
-    assert deploy_job["runs-on"] == ["self-hosted", "linux", "ARM64", "deploy-satellite"]
+    assert targets_job["runs-on"] == "ubuntu-latest"
+    assert targets_job["permissions"] == {}
+    resolve = targets_job["steps"][0]
+    assert resolve["env"] == {
+        "REQUESTED": "${{ inputs.deploy_targets }}",
+        "CONFIGURED": "${{ vars.DEPLOY_TARGETS }}",
+    }
+    assert "${{" not in resolve["run"]
+    assert deploy_job["needs"] == ["build", "targets"]
+    assert deploy_job["if"] == "needs.targets.outputs.matrix != '[]'"
+    assert deploy_job["runs-on"] == "${{ matrix.target.runs_on }}"
+    assert deploy_job["strategy"] == {
+        "fail-fast": False,
+        "matrix": {"target": "${{ fromJSON(needs.targets.outputs.matrix) }}"},
+    }
     assert deploy_job["permissions"] == {}
     assert deploy_job["concurrency"] == {
-        "group": "deploy-ha_satellite", "cancel-in-progress": False,
+        "group": "${{ matrix.target.concurrency }}", "cancel-in-progress": False,
     }
     assert deploy_job["timeout-minutes"] == 20
     assert all("uses" not in step for step in deploy_job["steps"])
@@ -47,6 +84,7 @@ def test_deployment_contract(deploy_job):
     assert deploy["if"] == "steps.superseded.outputs.skip == 'false'"
     assert deploy["env"]["DIGEST"] == "${{ needs.build.outputs.digest }}"
     assert deploy["env"]["IMAGE"] == "${{ env.REGISTRY }}/${{ env.DEPLOY_IMAGE_NAME }}"
+    assert deploy["env"]["DEPLOY_USER"] == "${{ matrix.target.deploy_user }}"
     assert all("${{" not in step["run"] for step in deploy_job["steps"])
 
 
@@ -83,6 +121,49 @@ def run_step(tmp_path, step, command, script, **env):
     )
 
 
+@pytest.mark.parametrize(
+    "requested,configured,expected",
+    [
+        ("", "", [PI]),
+        ("configured", "", [PI]),
+        ("configured", "azure", [AZURE]),
+        ("configured", "pi,azure", [PI, AZURE]),
+        ("configured", " Azure , PI ", [PI, AZURE]),
+        ("configured", "both", [PI, AZURE]),
+        ("configured", "none", []),
+        ("pi", "azure", [PI]),
+        ("azure", "", [AZURE]),
+        ("both", "none", [PI, AZURE]),
+        ("none", "both", []),
+    ],
+)
+def test_rollout_target_resolution(tmp_path, targets_job, requested, configured, expected):
+    result = run_step(
+        tmp_path, targets_job["steps"][0], "unused", "",
+        REQUESTED=requested, CONFIGURED=configured, GITHUB_STEP_SUMMARY="",
+    )
+    assert result.returncode == 0, result.stderr
+    output = (tmp_path / "output").read_text()
+    assert output.startswith("matrix=") and output.endswith("\n")
+    assert json.loads(output.removeprefix("matrix=")) == expected
+    names = " ".join(target["name"] for target in expected) or "none"
+    assert f"Rollout targets: {names}" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "configured",
+    ["nas", "pi;rm -rf /", "pi,*", "$(id)", "pi\nazure=x", "azure,pi4"],
+)
+def test_invalid_rollout_targets_fail(tmp_path, targets_job, configured):
+    result = run_step(
+        tmp_path, targets_job["steps"][0], "unused", "",
+        REQUESTED="configured", CONFIGURED=configured, GITHUB_STEP_SUMMARY="",
+    )
+    assert result.returncode != 0
+    assert "::error::" in result.stdout
+    assert not (tmp_path / "output").exists()
+
+
 @pytest.mark.parametrize("main_sha,skip", [(SHA, "false"), ("c" * 40, "true")])
 def test_superseded_build(tmp_path, deploy_job, main_sha, skip):
     result = run_step(
@@ -115,15 +196,27 @@ def test_main_lookup_failure_does_not_deploy(tmp_path, deploy_job, script):
 def test_invalid_digest_never_calls_sudo(tmp_path, deploy_job, digest):
     result = run_step(
         tmp_path, deploy_job["steps"][1], "sudo",
-        'touch "$GITHUB_OUTPUT"\n', DIGEST=digest,
+        'touch "$GITHUB_OUTPUT"\n', DIGEST=digest, DEPLOY_USER="bjoern",
     )
     assert result.returncode != 0
     assert "::error::Invalid image digest" in result.stdout
     assert not (tmp_path / "output").exists()
 
 
+@pytest.mark.parametrize("user", ["", "root;id", "-n", "Bjoern", "a b"])
+def test_invalid_deploy_user_never_calls_sudo(tmp_path, deploy_job, user):
+    result = run_step(
+        tmp_path, deploy_job["steps"][1], "sudo",
+        'touch "$GITHUB_OUTPUT"\n', DIGEST=DIGEST, DEPLOY_USER=user,
+    )
+    assert result.returncode != 0
+    assert "::error::Invalid deploy user" in result.stdout
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize("target", [PI, AZURE], ids=["pi", "azure"])
 @pytest.mark.parametrize("exit_code", [0, 1])
-def test_digest_deployment_and_failure_propagation(tmp_path, deploy_job, exit_code):
+def test_digest_deployment_and_failure_propagation(tmp_path, deploy_job, exit_code, target):
     result = run_step(
         tmp_path, deploy_job["steps"][1], "sudo",
         'if [[ "$5" != "ha_satellite" ]]; then\n'
@@ -136,11 +229,11 @@ def test_digest_deployment_and_failure_propagation(tmp_path, deploy_job, exit_co
         'fi\n'
         'printf "%s\\n" "$@" > "$GITHUB_OUTPUT"\nexit "$DEPLOY_EXIT"\n',
         IMAGE="ghcr.io/bjoernhoefer/ha_satellite", DIGEST=DIGEST,
-        DEPLOY_EXIT=str(exit_code),
+        DEPLOY_EXIT=str(exit_code), DEPLOY_USER=target["deploy_user"],
     )
     assert result.returncode == exit_code
     assert (tmp_path / "output").read_text().splitlines() == [
-        "-n", "-u", "bjoern", "/usr/local/bin/ha-deploy", "ha_satellite",
+        "-n", "-u", target["deploy_user"], "/usr/local/bin/ha-deploy", "ha_satellite",
         f"ghcr.io/bjoernhoefer/ha_satellite@{DIGEST}", SHA,
     ]
 

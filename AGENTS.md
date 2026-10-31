@@ -347,13 +347,24 @@ docker compose up -d
   `.github/workflows/build.yml` and pushed to
   `ghcr.io/bjoernhoefer/ha_satimage` on every push to `main` and on tags.
   If the package is private, the deployment user needs `docker login ghcr.io`.
-- **Auto updates:** tests → GHCR image → deploy job on a self-hosted ARM64
-  runner labelled `deploy-satellite` → host-installed `ha-deploy` with a
-  health check and rollback on failure (nonzero exit). Only pushes and manual
-  workflow runs on `main` deploy; stale builds are skipped. The runner runs
-  as dedicated user `gh-deploy`, without Docker access, and may only call
-  `/usr/local/bin/ha-deploy` via sudo as `bjoern`. It checks out no repository
-  code and runs no third-party actions. Host setup is separate; `ha-deploy`
+- **Auto updates:** tests → GHCR image → deploy jobs on the selected
+  rollout targets → host-installed `ha-deploy` with a health check and
+  rollback on failure (nonzero exit). Targets (fixed allowlist in the
+  `targets` job of `build.yml`): `pi` = runner
+  `[self-hosted, linux, ARM64, deploy-satellite]`, sudo as `bjoern`,
+  concurrency `deploy-ha_satellite`; `azure` = runner
+  `[self-hosted, linux, X64, deploy-satellite-azure]`, sudo as
+  `ha-satimage`, concurrency `deploy-ha_satellite-azure`. Pushes deploy to
+  repository variable `DEPLOY_TARGETS` (`pi`, `azure`, `both`, `none` or a
+  comma list; unset = `pi`); manual runs choose `deploy_targets`
+  (`configured` = the variable). One build digest goes to every target,
+  each target deploys independently (`fail-fast: false`). Only pushes and
+  manual workflow runs on `main` deploy; stale builds are skipped. Each
+  runner runs as dedicated user `gh-deploy`, without Docker access, and may
+  only call `/usr/local/bin/ha-deploy` via sudo as the target's deploy
+  user. It checks out no repository
+  code and runs no third-party actions. Host setup is separate (Azure VM:
+  private repo `bjoernhoefer/az_universal_vm`); `ha-deploy`
   uses a host-wide `flock` lock and tags the build digest locally as `latest`
   before `docker compose up -d --no-build --pull never --wait` for this
   service. The CD host uses `HA_SATIMAGE_TAG=latest`. Fork PR workflows
@@ -372,7 +383,7 @@ docker compose up -d
 
 - Semantic version in `src/ha_satimage/__init__.py` (`__version__`) and
   `pyproject.toml`; both must match (`tests/test_version.py`). Current:
-  **1.9.0**.
+  **1.10.0**.
 - Shown in the web UI footer and returned by `GET /api/version`.
 - Releases are git tags `vX.Y.Z`; CI builds them into the image tags
   `X.Y.Z`, `X.Y` and `latest`.
