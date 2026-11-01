@@ -394,6 +394,9 @@ def test_viewer_format_switches_between_jpeg_and_png(ui, live_server):
 
     # The choice survives a reload.
     ui.keyboard.press("Escape")
+    expect(ui.get_by_test_id("viewer")).to_be_hidden()
+    # Closing navigates back asynchronously; reload only once the deep link is gone.
+    ui.wait_for_function("() => !location.hash.includes('view=')")
     ui.reload()
     ui.get_by_test_id("preview-wien").click()
     expect(fmt).to_have_value("png")
@@ -758,8 +761,14 @@ def test_invalid_storage_location_shows_error(ui):
 
 # --- Switching source/image type --------------------------------------------------
 
-def test_change_composite_rerenders_and_updates_preview(ui, live_server):
+@pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
+def test_change_composite_rerenders_and_updates_preview(request, page_fixture, live_server):
+    ui = request.getfixturevalue(page_fixture)
     live_server.ensure_frames("wien", 1)
+    ui.goto(live_server.url + "/")
+    expect(ui.get_by_test_id("history-item-wien-0")).to_be_visible(timeout=15000)
+    _image_loaded(ui, "preview-wien")
+    preview_before = ui.get_by_test_id("preview-wien").get_attribute("src")
     before = {f["filename"] for f in live_server.frames("wien")}
     select = ui.get_by_test_id("region-composite-wien")
     expect(select).to_have_value("natural_color_hrv_with_night_ir")
@@ -770,7 +779,6 @@ def test_change_composite_rerenders_and_updates_preview(ui, live_server):
     assert regions["wien"]["composite"] == "natural_color_hrv"
 
     # Without another click: the server re-renders, the history reloads.
-    expect(ui.get_by_test_id("history-item-wien-0")).to_be_visible()
     ui.wait_for_function(
         "(n) => document.querySelectorAll('[data-testid^=\"history-item-wien-\"]').length > n",
         arg=len(before), timeout=15000,
@@ -778,6 +786,12 @@ def test_change_composite_rerenders_and_updates_preview(ui, live_server):
     latest = live_server.frames("wien")[0]
     assert latest["filename"] not in before
     assert latest["composite"] == "natural_color_hrv"
+    expect(ui.get_by_test_id("preview-wien")).not_to_have_attribute("src", preview_before)
+    _image_loaded(ui, "preview-wien")
+    ui.get_by_test_id("preview-wien").click()
+    expect(ui.get_by_test_id("viewer")).to_be_visible()
+    _image_loaded(ui, "viewer-image")
+    expect(ui.get_by_test_id("viewer-image")).to_have_attribute("src", latest["jpeg_url"])
 
 
 def test_toggle_borders_rerenders(ui, live_server):

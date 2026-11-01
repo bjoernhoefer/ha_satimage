@@ -3,6 +3,22 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.10.1] — 2026-11-01
+
+### Fixed
+
+- Media prewarm: a prewarm queued while another one for the same region was
+  still running was dropped by the scheduler, leaving the newest frame
+  without a pre-generated thumbnail/JPEG. One prewarm may now queue behind
+  the running one.
+- Storage relocation: a prewarm queued before a storage move no longer
+  recreates the old region directory (`_cache`) at the previous location.
+- Flaky CI tests that blocked image publication and rollout: thumbnail,
+  composite-change (desktop + phone) and viewer-format reload click tests
+  now wait for the asynchronous state they check (also the shared
+  `ensure_frames` helper and the archive "render all" test); the unwritable-path
+  check is skipped when running as root (permissions do not apply).
+
 ## [1.10.0] — 2026-10-29
 
 ### Added
