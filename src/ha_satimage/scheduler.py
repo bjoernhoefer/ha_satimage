@@ -999,6 +999,9 @@ class RenderScheduler:
                 executor=MEDIA_EXECUTOR,
                 replace_existing=True,
                 misfire_grace_time=None,
+                # One may queue behind a running prewarm; it reads the newest
+                # frame when it starts, so no frame is left without a preview.
+                max_instances=2,
             )
             # Sources without a download job (placeholders) archive here.
             if (

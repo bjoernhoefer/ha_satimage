@@ -497,13 +497,14 @@ def test_render_all_setting_and_manual_run(live_server):
     assert started.status_code == 200, started.text
     assert started.json()["sources"] >= 1
 
-    # The dummy source renders quickly - the archive fills up on its own.
-    deadline = 30
-    for _ in range(deadline * 2):
-        if archive_of(live_server).count():
-            break
-        import time
+    # The dummy source renders quickly - the archive fills up on its own,
+    # one image at a time; wait for more than one image type.
+    import time
 
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if len(archive_of(live_server).combinations("wien").get("dummy", [])) > 1:
+            break
         time.sleep(0.5)
     archive = archive_of(live_server)
     assert archive.count() > 0, "nothing was archived"

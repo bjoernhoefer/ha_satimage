@@ -167,14 +167,20 @@ def animation(buffer: RingBuffer, ext: str, fps: float) -> bytes | None:
 
 def prewarm(buffer: RingBuffer, fps: float) -> None:
     """After a new frame: generate thumbnail, JPEG and animations."""
-    latest = buffer.latest()
-    if latest is None:
-        return
-    for width in (THUMB_WIDTH, None):
-        jpeg(buffer, latest, width)
-    if len(buffer) <= GIF_PREWARM_MAX_FRAMES:
-        animation(buffer, "gif", fps)
-    try:
-        animation(buffer, "mp4", fps)
-    except ImportError:
-        logger.debug("MP4 skipped: imageio-ffmpeg missing")
+    # Storage relocation and location resets hold this lock; a queued job
+    # must not recreate the moved/dropped region directory.
+    with HEAVY_WORK_LOCK:
+        if not buffer.region_dir.is_dir():
+            logger.debug("Prewarm skipped: %s no longer exists", buffer.region_dir)
+            return
+        latest = buffer.latest()
+        if latest is None or not latest.path(buffer.region_dir).exists():
+            return
+        for width in (THUMB_WIDTH, None):
+            jpeg(buffer, latest, width)
+        if len(buffer) <= GIF_PREWARM_MAX_FRAMES:
+            animation(buffer, "gif", fps)
+        try:
+            animation(buffer, "mp4", fps)
+        except ImportError:
+            logger.debug("MP4 skipped: imageio-ffmpeg missing")

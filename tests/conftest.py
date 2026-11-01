@@ -64,13 +64,30 @@ class LiveServer:
         deliberately skipped.
         """
         deadline = time.monotonic() + timeout
+        triggered = False
         while time.monotonic() < deadline:
             frames = self.frames(region)
             if len(frames) >= count:
-                return frames
+                return self._settled(region, frames) if triggered else frames
             httpx.post(f"{self.url}/api/regions/{region}/refresh")
+            triggered = True
             time.sleep(0.3)
         raise AssertionError(f"{region}: weniger als {count} Frames nach {timeout}s")
+
+    def _settled(self, region: str, frames: list[dict], quiet: float = 1.5) -> list[dict]:
+        """Wait until a still pending triggered render has landed.
+
+        A refresh posted just before the count was reached may still render
+        afterwards; callers comparing frame lists would otherwise race it.
+        """
+        stable_since = time.monotonic()
+        deadline = stable_since + 15
+        while time.monotonic() - stable_since < quiet and time.monotonic() < deadline:
+            time.sleep(0.2)
+            current = self.frames(region)
+            if current != frames:
+                frames, stable_since = current, time.monotonic()
+        return frames
 
 
 def _free_port() -> int:

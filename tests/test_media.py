@@ -117,10 +117,28 @@ def test_scheduler_prewarms_after_new_frame(tmp_path, monkeypatch):
     job = scheduler._scheduler.get_job("media-wien")
     assert job is not None  # separate job, does not block the render run
     assert job.executor == "media"
+    # A prewarm queued behind a running one must not be dropped.
+    assert job.max_instances >= 2
     job.func(*job.args)
     buffer = buffers.get("wien", 12, 500)
     assert media.jpeg_path(buffer, buffer.latest(), media.THUMB_WIDTH).exists()
     assert list(media.cache_dir(buffer).glob("animation-*.gif"))
+
+
+def test_prewarm_after_relocation_does_not_recreate_old_region_dir(tmp_path):
+    from ha_satimage.buffer import BufferManager
+
+    buffers = BufferManager(tmp_path / "old")
+    stale = buffers.get("wien", 12, 500)
+    stale.add_frame(_png((10, 20, 30)), timestamp=T0)
+    buffers.relocate(tmp_path / "new", move_existing=True)
+    assert not stale.region_dir.exists()
+
+    media.prewarm(stale, 2.0)  # queued before the move
+
+    assert not stale.region_dir.exists()
+    moved = buffers.get("wien", 12, 500)
+    assert moved.latest() is not None
 
 
 @pytest.mark.parametrize("other_work", ["gif", "mp4", "render"])
