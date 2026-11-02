@@ -432,10 +432,25 @@
   <section id="sec-logs" data-testid="sec-logs">
     <details class="fold" data-testid="sec-logs-fold">
     <summary><h2>Logs</h2></summary>
+    <form id="log-levels-form" data-testid="log-levels-form" class="row">
+      <label class="inline">Record level (UI log + log file)
+        <select id="log-level-setting" data-testid="log-level-setting" style="width:auto">
+          <option value="">Default ({{ log_defaults.level }})</option>
+          {% for level in log_levels %}<option value="{{ level }}" {% if config.logging.level == level %}selected{% endif %}>{{ level }}</option>{% endfor %}
+        </select></label>
+      <label class="inline">Container output (Docker log, system disk)
+        <select id="log-stdout-level-setting" data-testid="log-stdout-level-setting" style="width:auto">
+          <option value="">Default ({{ log_defaults.stdout_level }})</option>
+          {% for level in log_levels %}<option value="{{ level }}" {% if config.logging.stdout_level == level %}selected{% endif %}>{{ level }}</option>{% endfor %}
+        </select></label>
+      <button type="submit" data-testid="log-levels-save" style="margin-top:0.4rem">Save log levels</button>
+    </form>
+    <div class="message" data-testid="log-levels-message" role="status"></div>
     <div class="row">
-      <label class="inline">Level
+      <label class="inline">Show
         <select data-testid="logs-level" id="logs-level" style="width:auto">
-          <option value="INFO">Info+</option>
+          <option value="DEBUG">Debug+</option>
+          <option value="INFO" selected>Info+</option>
           <option value="WARNING">Warnings+</option>
           <option value="ERROR">Errors only</option>
         </select></label>
@@ -1146,6 +1161,18 @@
       setTimeout(pollLogs, 2000);
     }
     document.getElementById("logs-level").addEventListener("change", applyLogFilter);
+    document.getElementById("log-levels-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = byTestId("log-levels-message");
+      try {
+        await postConfig({ logging: {
+          level: document.getElementById("log-level-setting").value,
+          stdout_level: document.getElementById("log-stdout-level-setting").value } });
+        showMessage(message, "Log levels saved.", true);
+      } catch (err) {
+        showMessage(message, "Saving failed: " + err.message, false);
+      }
+    });
     byTestId("logs-clear").addEventListener("click", () => logsEl.replaceChildren());
 
     /* ---------- Fullscreen viewer ---------- */

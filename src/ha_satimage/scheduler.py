@@ -693,7 +693,7 @@ class RenderScheduler:
         renders the newest capture when it starts)."""
         with self._queue_lock:
             if region_name in self._render_queued:
-                logger.debug("Render %s already queued", region_name)
+                logger.info("Render %s already queued - not queued twice", region_name)
                 return
             self._render_queued.add(region_name)
         self._scheduler.add_job(
@@ -742,7 +742,7 @@ class RenderScheduler:
         """
         with self._download_lock:
             if source_id in self._archive_queued:
-                logger.debug("Archive %s: run already queued", source_id)
+                logger.info("Archive %s: run already queued - not queued twice", source_id)
                 return
             self._archive_queued.add(source_id)
         self._scheduler.add_job(
@@ -869,6 +869,15 @@ class RenderScheduler:
             return 0
         archive = get_render_archive(render_archive_root(config))
         composites = archive_composites(entry)
+        paused = [
+            item["key"] for item in self._backoff.snapshot()
+            if item["paused_until"] and item["key"].split("/")[1:2] == [source_id]
+        ]
+        if paused:
+            logger.info(
+                "Archive %s: %d combination(s) paused after failures, skipped: %s",
+                source_id, len(paused), ", ".join(paused),
+            )
         if entry.driver == "mtg_fci":
             stored = self._archive_fci_slots(entry, config, archive, composites)
         else:

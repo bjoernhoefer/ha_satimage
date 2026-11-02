@@ -54,6 +54,11 @@ services:
       # Memory budget of one render child process in MiB (empty = container
       # limit minus 192 MiB, 0 = off).
       - HA_SATIMAGE_RENDER_MEMORY_MB=${HA_SATIMAGE_RENDER_MEMORY_MB:-}
+      # Default log levels (the web UI section "Logs" overrides them):
+      # UI log + log file on /data, and the container output Docker stores
+      # in its data directory (SD card) - keep that one at WARNING.
+      - HA_SATIMAGE_LOG_LEVEL=${HA_SATIMAGE_LOG_LEVEL:-INFO}
+      - HA_SATIMAGE_STDOUT_LOG_LEVEL=${HA_SATIMAGE_STDOUT_LOG_LEVEL:-WARNING}
       # Optional: overrides the credentials stored via the UI.
       - EUMETSAT_CONSUMER_KEY=${EUMETSAT_CONSUMER_KEY:-}
       - EUMETSAT_CONSUMER_SECRET=${EUMETSAT_CONSUMER_SECRET:-}

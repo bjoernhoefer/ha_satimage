@@ -26,6 +26,7 @@ from ha_satimage import __version__, location_change, logbuffer, media, storage,
 from ha_satimage.archive import RenderArchive, get_render_archive
 from ha_satimage.buffer import BufferManager
 from ha_satimage.config import (
+    LOG_LEVELS,
     COMPOSITES,
     COMPOSITES_BY_COLLECTION,
     DEFAULT_COMPOSITE_BY_COLLECTION,
@@ -67,6 +68,14 @@ def frames_dir_for(config: AppConfig) -> Path:
 
 
 config_store = ConfigStore()
+
+
+def apply_log_levels(config: AppConfig) -> None:
+    record, stdout = logbuffer.apply_levels(config.logging.level, config.logging.stdout_level)
+    logger.info("Log levels: UI log and file %s, container output (Docker log) %s", record, stdout)
+
+
+apply_log_levels(config_store.get())
 buffer_manager = BufferManager(frames_dir_for(config_store.get()))
 status_store = StatusStore()
 source_sync = SourceSync(config_store, DATA_DIR / "source_sync.json")
@@ -113,6 +122,9 @@ async def lifespan(_app: FastAPI):
         logger.critical("Temporary directory unusable - not starting: %s", exc)
         raise SystemExit(storage_guard.EXIT_STORAGE) from exc
     logger.info("Temporary files in %s", temp_dir)
+    from ha_satimage.sources.satpy_render import protection_summary
+
+    logger.info("Resource protection: %s", protection_summary())
     scheduler.check_storage()
     scheduler.start()
     try:
@@ -167,6 +179,11 @@ async def index(request: Request):
             "placeholder_drivers": PLACEHOLDER_DRIVERS,
             "max_locations": location_change.MAX_LOCATIONS,
             "version": __version__,
+            "log_levels": LOG_LEVELS,
+            "log_defaults": {
+                "level": logging.getLevelName(logbuffer.record_level()),
+                "stdout_level": logging.getLevelName(logbuffer.stdout_level()),
+            },
         },
     )
 
@@ -277,6 +294,8 @@ async def _save_config(old: AppConfig, new: AppConfig, move_existing: bool) -> i
         logger.info("Location changed or removed - history reset: %s", ", ".join(reset))
     else:
         config_store.update(new)
+    if new.logging != old.logging:
+        apply_log_levels(new)
     scheduler.reload()
     if changed_borders:
         scheduler.refresh_archived_regions(changed_borders)

@@ -82,6 +82,8 @@ to build locally.
 | `HA_SATIMAGE_FRAMES_FS_UUID` | as above | Same for a frame storage location outside `/data` |
 | `HA_SATIMAGE_MIN_FREE_MB` | `1024` | Minimum free space: start fails / work pauses below it |
 | `HA_SATIMAGE_RENDER_MEMORY_MB` | limit − 192 MiB | Memory budget of one render child process (`0` = off) |
+| `HA_SATIMAGE_LOG_LEVEL` | `INFO` | Default level of the UI log and the log file on `/data` (changeable in the UI under "Logs") |
+| `HA_SATIMAGE_STDOUT_LOG_LEVEL` | `WARNING` | Default level of the container output (Docker log, on the system disk; changeable in the UI) |
 | `HA_SATIMAGE_TAG` | `latest` | Image tag (pin e.g. `1.0` to stay on a minor line) |
 | `HA_SATIMAGE_PORT` | `6060` | Published web port |
 | `EUMETSAT_CONSUMER_KEY` / `EUMETSAT_CONSUMER_SECRET` | | Optional credentials (override the UI) |

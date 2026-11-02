@@ -550,6 +550,42 @@ def test_logs_are_shown_at_the_bottom(ui, live_server):
     expect(ui.locator('[data-testid="log-line"]')).to_have_count(0)
 
 
+@pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
+def test_log_levels_can_be_changed_in_the_ui(request, page_fixture, live_server):
+    page = request.getfixturevalue(page_fixture)
+    if page_fixture == "mobile_page":
+        page.goto(live_server.url + "/#sec-logs")
+    live_server.ensure_frames("mallorca", 1)
+    record = page.get_by_test_id("log-level-setting")
+    stdout = page.get_by_test_id("log-stdout-level-setting")
+    record.scroll_into_view_if_needed()
+    expect(record).to_have_value("")
+    expect(record.locator("option").first).to_have_text(re.compile(r"Default \(INFO\)"))
+    try:
+        record.select_option("WARNING")
+        stdout.select_option("ERROR")
+        page.get_by_test_id("log-levels-save").click()
+        expect(page.get_by_test_id("log-levels-message")).to_have_text("Log levels saved.")
+        stored = httpx.get(f"{live_server.url}/api/config").json()["logging"]
+        assert stored == {"level": "WARNING", "stdout_level": "ERROR"}
+        # INFO is no longer recorded.
+        marker = httpx.get(f"{live_server.url}/api/logs").json()["entries"][-1]["id"]
+        httpx.post(f"{live_server.url}/api/regions/mallorca/refresh")
+        time.sleep(1)
+        newer = httpx.get(f"{live_server.url}/api/logs?after={marker}").json()["entries"]
+        assert not any(e["level"] == "INFO" for e in newer)
+        # Kept after a reload.
+        page.reload()
+        if page_fixture == "mobile_page":
+            page.goto(live_server.url + "/#sec-logs")
+        expect(page.get_by_test_id("log-level-setting")).to_have_value("WARNING")
+        expect(page.get_by_test_id("log-stdout-level-setting")).to_have_value("ERROR")
+    finally:
+        httpx.post(f"{live_server.url}/api/config", json={"logging": {"level": "", "stdout_level": ""}})
+    page.get_by_test_id("refresh-mallorca").click()
+    expect(page.get_by_test_id("logs")).to_contain_text("Manual refresh requested for mallorca", timeout=10000)
+
+
 # --- Sources -------------------------------------------------------------
 
 def test_sources_json_editor_is_collapsed_and_editable(ui, live_server):

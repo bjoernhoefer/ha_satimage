@@ -17,6 +17,8 @@ Phases (each command can be repeated safely)::
     rollback    service stopped: copy data created at the target back to the
                 source (nothing deleted) and remove the marker
     check-compose FILE   validate a Compose file for the new location
+    apply-compose FILE   switch the service in a host Compose file to the new
+                location (backup ``FILE.before-nvme``, idempotent; needs PyYAML)
 
 Safety rules:
 
@@ -387,6 +389,121 @@ def check_compose_config(config: dict, target: str, uuid: str, service: str | No
     return problems
 
 
+LOG_OPTIONS = {"max-size": "2m", "max-file": "2"}
+BY_UUID_BIND = {
+    "type": "bind", "source": "/dev/disk/by-uuid", "target": "/run/host-disk-by-uuid",
+    "read_only": True, "bind": {"create_host_path": False},
+}
+
+
+def _long_bind(volume, source: str | None = None) -> dict:
+    """Long-syntax bind of a volume entry with ``create_host_path: false``."""
+    if isinstance(volume, dict):
+        result = dict(volume)
+    else:
+        parts = str(volume).split(":")
+        result = {"type": "bind", "source": parts[0], "target": parts[1]}
+        if len(parts) > 2 and "ro" in parts[2].split(","):
+            result["read_only"] = True
+    if source is not None:
+        result["source"] = source
+    result["type"] = "bind"
+    result["bind"] = {**(result.get("bind") or {}), "create_host_path": False}
+    return result
+
+
+def compose_for_target(document: dict, target: str, uuid: str, service: str | None = None,
+                       frames_uuid: str | None = None) -> tuple[dict, str]:
+    """Returns the Compose document with the service switched to ``target``
+    (and the service name). Only the /data source, bind options, the
+    identity bind, the UUID variable and Docker's log limit are changed."""
+    import copy
+
+    services = (document or {}).get("services") or {}
+    if service is None:
+        candidates = [name for name, svc in services.items()
+                      if any(_mount_target(v) == "/data" for v in (svc or {}).get("volumes", []))]
+        if len(candidates) != 1:
+            raise MigrationError(
+                f"Expected exactly one service with /data in this file, found {candidates or 'none'}"
+                " - pass --service or edit the file manually")
+        service = candidates[0]
+    if service not in services:
+        raise MigrationError(f"Service {service} is not defined in this file - edit its file manually")
+    result = copy.deepcopy(document)
+    svc = result["services"][service]
+    volumes = []
+    for volume in svc.get("volumes") or []:
+        mount = _mount_target(volume)
+        if mount == "/data":
+            volumes.append(_long_bind(volume, source=target))
+        elif mount == "/run/host-disk-by-uuid":
+            continue
+        elif not isinstance(volume, dict) or volume.get("type", "bind") == "bind":
+            source = volume.get("source") if isinstance(volume, dict) else str(volume).split(":")[0]
+            # Named volumes (no path) stay as they are.
+            volumes.append(_long_bind(volume) if str(source).startswith(("/", ".", "$")) else volume)
+        else:
+            volumes.append(volume)
+    if not any(_mount_target(v) == "/data" for v in volumes):
+        raise MigrationError(f"Service {service} has no /data volume")
+    volumes.append(dict(BY_UUID_BIND))
+    svc["volumes"] = volumes
+    wanted = {"HA_SATIMAGE_REQUIRE_FS_UUID": uuid}
+    if frames_uuid:
+        wanted["HA_SATIMAGE_FRAMES_FS_UUID"] = frames_uuid
+    environment = svc.get("environment")
+    if isinstance(environment, list):
+        environment = [item for item in environment
+                       if str(item).split("=", 1)[0] not in wanted]
+        environment.extend(f"{key}={value}" for key, value in wanted.items())
+    else:
+        environment = {**dict(environment or {}), **wanted}
+    svc["environment"] = environment
+    logging_config = svc.get("logging") or {}
+    if logging_config.get("driver", "json-file") == "json-file":
+        options = dict(logging_config.get("options") or {})
+        options.setdefault("max-size", LOG_OPTIONS["max-size"])
+        options.setdefault("max-file", LOG_OPTIONS["max-file"])
+        svc["logging"] = {**logging_config, "driver": "json-file", "options": options}
+    return result, service
+
+
+def apply_compose(path: Path, target: str, uuid: str, service: str | None = None,
+                  frames_uuid: str | None = None) -> bool:
+    """Rewrites a host Compose file for the new location. Keeps the first
+    original as ``<file>.before-nvme``. Returns whether the file changed."""
+    try:
+        import yaml
+    except ImportError as exc:
+        raise MigrationError("PyYAML is required: sudo apt install python3-yaml") from exc
+    path = Path(path)
+    if not path.is_absolute() or not path.is_file() or path.is_symlink():
+        raise MigrationError(f"{path} must be an existing absolute, non-symlink file")
+    original_text = path.read_text()
+    document = yaml.safe_load(original_text)
+    updated, service = compose_for_target(document, target, uuid, service, frames_uuid)
+    if updated == document:
+        log(f"{path}: service {service} already uses {target} - unchanged")
+        return False
+    backup = path.with_name(path.name + ".before-nvme")
+    if not backup.exists():
+        shutil.copy2(path, backup)
+        log(f"Backup of the Compose file: {backup}")
+    stat = path.stat()
+    temporary = path.with_name(f".{path.name}.part")
+    temporary.write_text(yaml.safe_dump(updated, sort_keys=False, default_flow_style=False))
+    os.chmod(temporary, stat.st_mode & 0o7777)
+    try:
+        os.chown(temporary, stat.st_uid, stat.st_gid)
+    except PermissionError:
+        pass
+    os.replace(temporary, path)
+    log(f"{path}: service {service} switched to {target} (UUID {uuid}); "
+        "comments/formatting of the file are not kept (see the backup)")
+    return True
+
+
 def _mount_target(volume) -> str | None:
     if isinstance(volume, dict):
         return volume.get("target")
@@ -405,16 +522,27 @@ def main(argv: list[str] | None = None) -> int:
                         help="do not copy ACLs/xattrs (target filesystem without support)")
     parser.add_argument("--full-checksum", action="store_true",
                         help="verify every file by content (reads all data once more)")
+    parser.add_argument("--frames-uuid", default=None,
+                        help="apply-compose: UUID of a frame location outside /data on another disk")
+    parser.add_argument("--service", default=None,
+                        help="Compose service (default: the one that mounts /data)")
     parser.add_argument("command", choices=["preflight", "copy", "finalize", "verify", "status",
-                                            "rollback", "check-compose"])
+                                            "rollback", "check-compose", "apply-compose"])
     parser.add_argument("compose_file", nargs="?")
     args = parser.parse_args(argv)
     try:
+        if args.command == "apply-compose":
+            if not args.compose_file:
+                raise MigrationError("apply-compose needs the Compose file")
+            apply_compose(Path(args.compose_file), args.target, args.expect_uuid, args.service,
+                          args.frames_uuid)
+            return 0
         if args.command == "check-compose":
             if not args.compose_file:
                 raise MigrationError("check-compose needs the Compose file")
             result = run(["docker", "compose", "-f", args.compose_file, "config", "--format", "json"])
-            problems = check_compose_config(json.loads(result.stdout), args.target, args.expect_uuid)
+            problems = check_compose_config(json.loads(result.stdout), args.target, args.expect_uuid,
+                                            args.service)
             for problem in problems:
                 log(f"PROBLEM: {problem}")
             log("Compose ok" if not problems else f"{len(problems)} problem(s)")

@@ -21,6 +21,11 @@ The project follows [Semantic Versioning](https://semver.org/).
   data directory (preflight, copy while running, finalize with the service
   stopped, verify, rollback, Compose check); never deletes the source,
   never overwrites a foreign target, marks the old directory as migrated.
+- `scripts/ha_nzbpi_switch.sh`: one controlled run of the switch on nzbpi
+  (checks, copy, Compose rewrite + validation before the stop, final sync,
+  verified start, then the systemd unit); dry check without `--run`, no
+  automatic rollback. `ha_storage_migrate.py apply-compose` rewrites the
+  host Compose file idempotently with a backup.
 - `scripts/ha_measure.sh`: read-only before/after measurement (SD vs. NVMe
   I/O per device, container `io.stat`, memory peak, OOM kills, iowait,
   render statistics). Optional systemd template
@@ -29,6 +34,15 @@ The project follows [Semantic Versioning](https://semver.org/).
   peak RSS, memory budget, queues, backoff, storage state, download errors.
 - Documentation `docs/storage.md` (layout, guard, migration, rollback,
   measurements, remaining host dependencies).
+- Log levels: `HA_SATIMAGE_LOG_LEVEL` (UI log + log file, default `INFO`)
+  and `HA_SATIMAGE_STDOUT_LOG_LEVEL` (container output = Docker log on the
+  system disk, default `WARNING`) are defaults; the "Logs" section of the web
+  UI (config `logging.level` / `logging.stdout_level`) changes both at
+  runtime. `DEBUG` only affects ha_satimage's own loggers.
+- Every protection logs what it does: active limits at start-up ("Resource
+  protection: ..."), coarsened windows, backoff pauses, repeated failures
+  and recovery, skipped paused archive combinations, de-duplicated queue
+  entries, storage problems and recovery.
 
 ### Changed
 
@@ -60,6 +74,11 @@ The project follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Incomplete render output (truncated PNG) is no longer stored as a frame.
+- Image build: `TMPDIR=/data/tmp` is only set for the runtime (micromamba
+  failed at build time because `/data` does not exist in the image).
+- Archive runs pause a combination only after a resource error; a single
+  broken raw slot is retried by the next run instead of pausing the image type.
+- Windows below 4 Mpx are never coarsened (HRV detail of regular regions kept).
 - Frames, ring buffer indexes and state files are written atomically; an
   unreadable index is rebuilt from the frame files instead of deleting all
   frames as orphans.

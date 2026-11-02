@@ -430,6 +430,19 @@ class RenderStats:
 STATS = RenderStats()
 
 
+def protection_summary() -> str:
+    """One line with the active render protections (logged at start-up)."""
+    budget = memory_budget_bytes()
+    return (
+        f"render start method {start_method()}, "
+        f"memory budget {f'{budget / 2**20:.0f} MiB' if budget else 'none'}, "
+        f"timeout {RENDER_TIMEOUT_SECONDS:.0f} s, "
+        f"windows above {COARSEN_MIN_PIXELS / 1e6:.0f} Mpx coarsened to "
+        f"<= {MAX_SOURCE_OVERSAMPLING:g}x the image, "
+        f"retry only after a non-resource crash ({RETRY_DELAY_SECONDS:.0f} s)"
+    )
+
+
 def start_method() -> str:
     method = os.environ.get("HA_SATIMAGE_RENDER_START_METHOD", "forkserver").strip() or "forkserver"
     if method not in multiprocessing.get_all_start_methods():
@@ -570,6 +583,7 @@ __all__ = [
     "STATS",
     "coarsen_factor",
     "memory_budget_bytes",
+    "protection_summary",
     "render_in_subprocess",
     "render_png",
     "source_window",

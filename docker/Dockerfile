@@ -30,7 +30,6 @@ ENV MAMBA_DOCKERFILE_ACTIVATE=1 \
     HA_SATIMAGE_CONFIG=/data/config.yaml \
     SATPY_DATA_DIR=/data/satpy \
     XDG_CACHE_HOME=/data/cache/xdg \
-    TMPDIR=/data/tmp \
     HA_SATIMAGE_STDOUT_LOG_LEVEL=WARNING \
     MALLOC_ARENA_MAX=2 \
     OMP_NUM_THREADS=1 \
@@ -68,6 +67,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 COPY docker/entrypoint.sh /usr/local/bin/ha_satimage-entrypoint.sh
 RUN chmod +x /usr/local/bin/ha_satimage-entrypoint.sh
+
+# Runtime only (after every RUN step): temporary files go to the data disk,
+# never into the container layer. /data does not exist at build time.
+ENV TMPDIR=/data/tmp
 
 EXPOSE 6060
 

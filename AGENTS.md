@@ -456,7 +456,9 @@ archive offers JPEG and PNG as well.
   `FailureBackoff`. Only non-resource crashes retry once (after 10 s).
 - The host deployment keeps the names `ha_satellite` (service/container,
   `ha-deploy` stack, concurrency group); migration tool
-  `scripts/ha_storage_migrate.py`, measurement `scripts/ha_measure.sh`.
+  `scripts/ha_storage_migrate.py` (incl. `apply-compose`), one-shot switch
+  `scripts/ha_nzbpi_switch.sh` (tested with stubs in
+  `tests/test_switch_script.py`), measurement `scripts/ha_measure.sh`.
 
 ## Operating rules
 
@@ -484,6 +486,11 @@ archive offers JPEG and PNG as well.
 - A storage location change holds the render lock
   (`scheduler.exclusive()`), checks the target path with a write test and
   merges the ring buffer indexes when moving.
+- **Log levels:** `HA_SATIMAGE_LOG_LEVEL` (UI log + file) and
+  `HA_SATIMAGE_STDOUT_LOG_LEVEL` (Docker log on the system disk, default
+  `WARNING`) are defaults; config `logging.level`/`logging.stdout_level`
+  (UI "Logs", `logbuffer.apply_levels`) overrides them at runtime. Every
+  resource/storage protection must log when it acts (pause, skip, recovery).
 - **Logs** are central: render start/end, skipped runs, errors,
   configuration and storage changes, source sync are logged at
   INFO/WARNING. The UI shows them live at the bottom (`GET /api/logs`),
@@ -562,7 +569,7 @@ fullscreen viewer fills the viewport (desktop **and** phone viewport
 image from the dropdown, zoom in the viewer (+/−/reset, keys, drag,
 desktop + phone), format selection in the viewer (JPEG/PNG, live
 MJPEG/MP4/GIF, desktop + phone), live stream in the browser incl. deep link
-`/live/{region}`, logs at the bottom, source JSON (collapsed, editable,
+`/live/{region}`, logs at the bottom, log levels (desktop + phone), source JSON (collapsed, editable,
 validation), enable sources, sync + adopt, scheduled maintenance (badge,
 maintenance image, check interval; desktop + phone), change storage location incl.
 move, no horizontal scrolling on phones, change image type/source per

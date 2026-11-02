@@ -31,7 +31,11 @@ this repository cannot move:
   the page cache was evicted under memory pressure.
 - **Docker's stdout log** (`json-file`): size-limited to 2 × 2 MB, the image
   only logs warnings there (full log: `/data/logs/ha_satimage.log`,
-  1 MB × 4) and uvicorn's access log is off.
+  1 MB × 4) and uvicorn's access log is off. Both levels can be changed at
+  runtime in the web UI ("Logs": record level and container output; defaults
+  `HA_SATIMAGE_LOG_LEVEL=INFO`, `HA_SATIMAGE_STDOUT_LOG_LEVEL=WARNING`).
+  Keep the container output at `WARNING` or higher on the Pi; use `DEBUG`
+  only temporarily for the record level (it goes to the NVMe).
 - **Container state** writes by Docker for every healthcheck (every 2 min).
 - Moving Docker's data directory (`data-root`) to the NVMe is a host
   decision outside this repository.
@@ -104,6 +108,39 @@ has more than 1 GiB free (`df -h /home/bjoern/ha_satellite/data`), otherwise
 lower `HA_SATIMAGE_MIN_FREE_MB` for this step. Take the
 [before measurement](#measurements) before deploying.
 
+### Recommended: one controlled run (steps 1 + 2 + systemd unit)
+
+`scripts/ha_nzbpi_switch.sh` performs steps 1 and 2 below in the safe
+order and verifies the result; on success it installs the systemd unit
+(set `SKIP_SYSTEMD=1` to skip). It never deletes anything and never rolls
+back by itself: if a step after the stop fails, it stops and prints the
+state and the manual rollback commands.
+
+```bash
+ssh nzbpi
+git clone --depth 1 https://github.com/bjoernhoefer/ha_satimage.git /tmp/ha_satimage
+sudo bash /tmp/ha_satimage/scripts/ha_nzbpi_switch.sh          # checks only
+sudo bash /tmp/ha_satimage/scripts/ha_nzbpi_switch.sh --run    # switch
+```
+
+Order: checks (root, tools, NVMe UUID, container labels → Compose file,
+project and service, preflight, frame location) → `copy` twice while the
+service runs → `apply-compose` (host Compose file switched to the NVMe,
+backup `*.before-nvme`, comments are not kept) + `check-compose`, both
+**before** the stop (on a failed check the original file is restored) →
+`docker stop` → `finalize` → `docker compose -p <project> up` of the same
+service → verified: `/data` mount source, health, `/healthz`, storage
+state in `/api/diagnostics` (UUID of `/data`, not paused), marker in the
+old directory → systemd unit. A frame storage location outside `/data`
+is checked first: on the NVMe nothing to do, on another disk its UUID is
+set as `HA_SATIMAGE_FRAMES_FS_UUID`, on the SD card the script stops
+(choose another location in the UI first). Every step can be repeated by
+running the script again.
+
+Do not push to `main` while it runs (CD would recreate the container).
+
+The manual steps follow.
+
 ### 1. Preparation (approval B, service keeps running)
 
 ```bash
@@ -132,7 +169,7 @@ FILES=$(sudo docker inspect -f '{{index .Config.Labels "com.docker.compose.proje
 sudo docker stop --time 60 ha_satellite
 sudo python3 /tmp/ha_storage_migrate.py finalize      # sync with --delete, verify, marker
 sudo cp -p "$FILES" "$FILES.before-nvme"              # backup of the host Compose file
-sudoedit "$FILES"                                     # see below
+sudo python3 /tmp/ha_storage_migrate.py apply-compose "$FILES"   # or sudoedit, see below
 sudo python3 /tmp/ha_storage_migrate.py check-compose "$FILES"
 cd "$DIR" && sudo docker compose -f "$FILES" up -d --no-build --pull never --wait ha_satellite
 sudo docker logs ha_satellite 2>&1 | grep 'storage check'   # "... UUID e16ccc22-…"

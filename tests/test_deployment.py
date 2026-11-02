@@ -305,7 +305,11 @@ def test_compose_stores_data_on_the_checked_nvme_without_sd_fallback():
 
 def test_image_keeps_runtime_writes_off_the_container_layer():
     dockerfile = (ROOT / "docker/Dockerfile").read_text()
-    assert "TMPDIR=/data/tmp" in dockerfile
+    assert "ENV TMPDIR=/data/tmp" in dockerfile
+    # /data does not exist at build time: TMPDIR must be set after every RUN.
+    lines = dockerfile.splitlines()
+    tmpdir_line = next(i for i, line in enumerate(lines) if "TMPDIR=/data/tmp" in line)
+    assert not any(line.startswith("RUN ") for line in lines[tmpdir_line:])
     assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile and "compileall" in dockerfile
     assert "HA_SATIMAGE_STDOUT_LOG_LEVEL=WARNING" in dockerfile
     assert "VOLUME" not in "\n".join(
@@ -346,6 +350,29 @@ def test_deployment_names_are_not_renamed():
 
 def test_host_helpers_are_valid():
     subprocess.run(["bash", "-n", str(ROOT / "scripts/ha_measure.sh")], check=True)
+    subprocess.run(["bash", "-n", str(ROOT / "scripts/ha_nzbpi_switch.sh")], check=True)
     unit = (ROOT / "docker/systemd/ha-satimage-after-mount.service").read_text()
     assert "RequiresMountsFor=/mnt/data2/ha_satimage/data" in unit
     assert "docker start ha_satellite" in unit
+
+
+def test_switch_script_order_and_safety():
+    script = (ROOT / "scripts/ha_nzbpi_switch.sh").read_text()
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    # Dry check unless --run; never deletes or rolls back by itself.
+    assert '[ "${1:-}" = "--run" ] && RUN=1' in code
+    assert "rm -" not in code and "--delete" not in code
+    # Rollback commands are only printed for the operator, never executed.
+    assert '"${MIGRATE[@]}" rollback' not in code
+    # The Compose file is switched and validated before the service stops;
+    # systemd only after the verified start.
+    main = code[code.index('step "1. Checks"'):]
+    order = [main.index(marker) for marker in (
+        "preflight", " copy", "apply-compose", "check-compose", "docker stop",
+        " finalize", "docker compose -p", "/api/diagnostics", "systemctl enable",
+    )]
+    assert order == sorted(order)
+    assert "findmnt -no UUID" in code and "EXPECT_UUID:-e16ccc22-790c-4f89-97f5-b7caca060bbd" in code
+    # Same Compose project and service: no second instance next to the old one.
+    assert 'docker compose -p "$PROJECT" -f "$FILES"' in code
+    assert "CONTAINER=${CONTAINER:-ha_satellite}" in code

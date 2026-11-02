@@ -218,3 +218,94 @@ def test_compose_check():
         assert expected in problems
     short = _compose(volumes=["/home/x:/data"])
     assert "long-syntax" in migrate.check_compose_config(short, target, UUID)[0]
+
+
+HOST_COMPOSE = """\
+services:
+  ha_satellite:
+    image: ghcr.io/bjoernhoefer/ha_satellite:latest
+    container_name: ha_satellite
+    restart: unless-stopped
+    ports: ["6060:6060"]
+    mem_limit: 1700003840
+    volumes:
+      - /home/bjoern/ha_satellite/data:/data
+      - /mnt:/mnt
+      - cache:/cache
+    environment:
+      - PUID=1000
+      - EUMETSAT_CONSUMER_KEY=${EUMETSAT_CONSUMER_KEY:-}
+volumes:
+  cache: {}
+"""
+TARGET = "/mnt/data2/ha_satimage/data"
+
+
+def _apply(tmp_path, text=HOST_COMPOSE, **kwargs):
+    yaml = pytest.importorskip("yaml")
+    path = tmp_path / "docker-compose.yml"
+    path.write_text(text)
+    os.chmod(path, 0o640)
+    changed = migrate.apply_compose(path, TARGET, UUID, **kwargs)
+    return path, changed, yaml.safe_load(path.read_text())
+
+
+def test_apply_compose_switches_only_the_data_location(tmp_path):
+    path, changed, document = _apply(tmp_path)
+    assert changed
+    service = document["services"]["ha_satellite"]
+    volumes = {v["target"] if isinstance(v, dict) else v.split(":")[1]: v for v in service["volumes"]}
+    assert volumes["/data"] == {"type": "bind", "source": TARGET, "target": "/data",
+                                "bind": {"create_host_path": False}}
+    assert volumes["/mnt"]["source"] == "/mnt" and volumes["/mnt"]["bind"]["create_host_path"] is False
+    assert volumes["/run/host-disk-by-uuid"]["read_only"] is True
+    assert volumes["/cache"] == "cache:/cache"  # named volume untouched
+    assert f"HA_SATIMAGE_REQUIRE_FS_UUID={UUID}" in service["environment"]
+    assert "EUMETSAT_CONSUMER_KEY=${EUMETSAT_CONSUMER_KEY:-}" in service["environment"]
+    assert service["logging"] == {"driver": "json-file", "options": {"max-size": "2m", "max-file": "2"}}
+    # Everything else is kept (name, image, limit, port).
+    assert service["container_name"] == "ha_satellite" and service["mem_limit"] == 1700003840
+    assert service["image"].endswith("ha_satellite:latest") and service["ports"] == ["6060:6060"]
+    # Original kept, permissions kept, result passes the Compose check.
+    assert (tmp_path / "docker-compose.yml.before-nvme").read_text() == HOST_COMPOSE
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert migrate.check_compose_config(document, TARGET, UUID) == []
+
+
+def test_apply_compose_is_idempotent_and_keeps_the_first_backup(tmp_path):
+    path, _, first = _apply(tmp_path)
+    assert migrate.apply_compose(path, TARGET, UUID) is False
+    assert (tmp_path / "docker-compose.yml.before-nvme").read_text() == HOST_COMPOSE
+    import yaml
+
+    assert yaml.safe_load(path.read_text()) == first
+
+
+def test_apply_compose_sets_the_frames_uuid_for_another_disk(tmp_path):
+    other = "11111111-2222-3333-4444-555555555555"
+    _, _, document = _apply(tmp_path, frames_uuid=other)
+    environment = document["services"]["ha_satellite"]["environment"]
+    assert f"HA_SATIMAGE_FRAMES_FS_UUID={other}" in environment
+
+
+def test_apply_compose_with_mapping_environment_and_existing_log_limit(tmp_path):
+    text = HOST_COMPOSE.replace(
+        "    environment:\n      - PUID=1000\n      - EUMETSAT_CONSUMER_KEY=${EUMETSAT_CONSUMER_KEY:-}\n",
+        "    environment:\n      PUID: 1000\n      HA_SATIMAGE_REQUIRE_FS_UUID: none\n"
+        "    logging:\n      options:\n        max-size: 5m\n",
+    )
+    _, _, document = _apply(tmp_path, text=text)
+    service = document["services"]["ha_satellite"]
+    assert service["environment"] == {"PUID": 1000, "HA_SATIMAGE_REQUIRE_FS_UUID": UUID}
+    assert service["logging"]["options"] == {"max-size": "5m", "max-file": "2"}
+
+
+def test_apply_compose_refuses_ambiguous_or_missing_service(tmp_path):
+    two = HOST_COMPOSE.replace("volumes:\n  cache: {}\n", "") + (
+        "  other:\n    image: x\n    volumes:\n      - /srv:/data\n"
+    )
+    with pytest.raises(migrate.MigrationError, match="exactly one service"):
+        _apply(tmp_path, text=two)
+    assert not (tmp_path / "docker-compose.yml.before-nvme").exists()
+    with pytest.raises(migrate.MigrationError, match="not defined"):
+        _apply(tmp_path, service="nope")
