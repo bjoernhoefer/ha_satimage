@@ -259,3 +259,93 @@ def test_container_resource_limits():
         "BLIS_NUM_THREADS",
     ):
         assert f"{variable}=1" in dockerfile
+
+
+def _interpolate(value, env=None):
+    """Minimal Compose ``${VAR:-default}`` interpolation (no docker needed)."""
+    import re
+
+    env = env or {}
+    if isinstance(value, dict):
+        return {k: _interpolate(v, env) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_interpolate(v, env) for v in value]
+    if isinstance(value, str):
+        return re.sub(r"\$\{(\w+):-([^}]*)\}", lambda m: env.get(m[1]) or m[2], value)
+    return value
+
+
+def _environment(service) -> dict:
+    return dict(item.split("=", 1) for item in service["environment"])
+
+
+def test_compose_stores_data_on_the_checked_nvme_without_sd_fallback():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("migrate", ROOT / "scripts/ha_storage_migrate.py")
+    migrate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migrate)
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    service = compose["services"]["ha_satimage"]
+    effective = {"services": {"ha_satimage": {**_interpolate(service), "environment": _interpolate(_environment(service))}}}
+    assert migrate.check_compose_config(
+        effective, migrate.DEFAULT_TARGET, migrate.DEFAULT_UUID, "ha_satimage"
+    ) == []
+    # Every bind refuses to create a missing host path (unmounted disk).
+    for volume in service["volumes"]:
+        assert volume["type"] == "bind" and volume["bind"]["create_host_path"] is False
+        assert "propagation" not in volume["bind"]
+    # Host path stays configurable.
+    custom = _interpolate(service, {"HOST_DATA_DIR": "/srv/ha"})
+    assert custom["volumes"][0]["source"] == "/srv/ha"
+    # Docker's own log (system disk) is bounded.
+    assert service["logging"]["options"]["max-size"] == "2m"
+    assert int(service["logging"]["options"]["max-file"]) <= 3
+
+
+def test_image_keeps_runtime_writes_off_the_container_layer():
+    dockerfile = (ROOT / "docker/Dockerfile").read_text()
+    assert "TMPDIR=/data/tmp" in dockerfile
+    assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile and "compileall" in dockerfile
+    assert "HA_SATIMAGE_STDOUT_LOG_LEVEL=WARNING" in dockerfile
+    assert "VOLUME" not in "\n".join(
+        line for line in dockerfile.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "--no-access-log" in dockerfile
+    assert "--interval=2m" in dockerfile
+
+
+def test_entrypoint_checks_storage_before_writing():
+    script = (ROOT / "docker/entrypoint.sh").read_text()
+    subprocess.run(["bash", "-n", str(ROOT / "docker/entrypoint.sh")], check=True)
+    guard = script.index("storage_guard --no-write")
+    for write in ("chown -R", "install -d", "find \"$TMPDIR\""):
+        assert script.index(write) > guard, write
+    # Temp cleanup only in the dedicated directory.
+    assert '"${TMPDIR:-}" = "$DATA_DIR/tmp"' in script
+    assert script.count("|| exit 78") == 3
+
+
+def test_env_example_documents_storage_variables():
+    example = (ROOT / ".env.example").read_text()
+    for name in ("HOST_DATA_DIR=/mnt/data2/ha_satimage/data", "HA_SATIMAGE_REQUIRE_FS_UUID",
+                 "HA_SATIMAGE_FRAMES_FS_UUID", "HA_SATIMAGE_MIN_FREE_MB",
+                 "HA_SATIMAGE_RENDER_MEMORY_MB"):
+        assert name in example
+
+
+def test_deployment_names_are_not_renamed():
+    """The host stack keeps its ha_satellite name: a rename would start a
+    second container next to the old one on the same data."""
+    workflow = (ROOT / ".github/workflows/build.yml").read_text()
+    assert '/usr/local/bin/ha-deploy ha_satellite "${IMAGE}@${DIGEST}"' in workflow
+    assert '"concurrency":"deploy-ha_satellite"' in workflow
+    setup = (ROOT / "scripts/pi_setup.py").read_text()
+    assert 'parser.add_argument("--service", default="ha_satellite")' in setup
+
+
+def test_host_helpers_are_valid():
+    subprocess.run(["bash", "-n", str(ROOT / "scripts/ha_measure.sh")], check=True)
+    unit = (ROOT / "docker/systemd/ha-satimage-after-mount.service").read_text()
+    assert "RequiresMountsFor=/mnt/data2/ha_satimage/data" in unit
+    assert "docker start ha_satellite" in unit

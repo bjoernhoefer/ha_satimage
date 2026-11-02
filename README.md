@@ -17,6 +17,9 @@ into regional crops and exposes it to **Home Assistant** as camera entities
 git clone https://github.com/bjoernhoefer/ha_satimage.git
 cd ha_satimage
 cp .env.example .env   # optional: EUMETSAT credentials, data directory
+# The default data directory is the NVMe of the reference Raspberry Pi. On
+# other hosts set HOST_DATA_DIR and HA_SATIMAGE_REQUIRE_FS_UUID in .env
+# (e.g. ./data and none) and create the directory first.
 docker compose up -d --build
 ```
 
@@ -61,6 +64,8 @@ optionally `.env`). The image is published publicly to
 mkdir -p ~/ha_satimage && cd ~/ha_satimage
 curl -sO https://raw.githubusercontent.com/bjoernhoefer/ha_satimage/main/docker-compose.yml
 curl -s -o .env https://raw.githubusercontent.com/bjoernhoefer/ha_satimage/main/.env.example
+# Data directory on the data disk (not created automatically, see below):
+sudo install -d -o 1000 -g 1000 /mnt/data2/ha_satimage/data
 docker compose up -d
 ```
 
@@ -72,7 +77,11 @@ to build locally.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `HOST_DATA_DIR` | `./data` | Host directory mounted to `/data` |
+| `HOST_DATA_DIR` | `/mnt/data2/ha_satimage/data` | Host directory mounted to `/data` (must exist; never created automatically) |
+| `HA_SATIMAGE_REQUIRE_FS_UUID` | NVMe UUID of nzbpi | Filesystem UUID(s) `/data` must be on; `none` disables the check |
+| `HA_SATIMAGE_FRAMES_FS_UUID` | as above | Same for a frame storage location outside `/data` |
+| `HA_SATIMAGE_MIN_FREE_MB` | `1024` | Minimum free space: start fails / work pauses below it |
+| `HA_SATIMAGE_RENDER_MEMORY_MB` | limit − 192 MiB | Memory budget of one render child process (`0` = off) |
 | `HA_SATIMAGE_TAG` | `latest` | Image tag (pin e.g. `1.0` to stay on a minor line) |
 | `HA_SATIMAGE_PORT` | `6060` | Published web port |
 | `EUMETSAT_CONSUMER_KEY` / `EUMETSAT_CONSUMER_SECRET` | | Optional credentials (override the UI) |
@@ -82,8 +91,18 @@ to build locally.
 All state (configuration, logs, product cache, source sync results and — by
 default — the rendered frames) lives in a **host directory** that is
 bind-mounted to `/data` in the container. Its path is set via
-`HOST_DATA_DIR` in `.env` (default: `./data` next to
-`docker-compose.yml`). The configuration is stored in `<data>/config.yaml`.
+`HOST_DATA_DIR` in `.env` (default: `/mnt/data2/ha_satimage/data`, the NVMe
+disk of the Raspberry Pi, so the SD card is spared). The directory must
+exist and be on the filesystem given by `HA_SATIMAGE_REQUIRE_FS_UUID` —
+otherwise the container refuses to start instead of writing to the system
+disk. Other hosts set their own path and UUID (or `none`), e.g.
+`HOST_DATA_DIR=./data` and `HA_SATIMAGE_REQUIRE_FS_UUID=none` for a quick
+local test (`mkdir -p data` first). The configuration is stored in
+`<data>/config.yaml`.
+
+Storage layout, protection against a missing disk, the migration from the
+old `ha_satellite` directory, rollback and before/after measurements:
+**[docs/storage.md](docs/storage.md)**.
 
 Because the container itself is stateless, the configuration survives image
 updates, `docker compose pull` / `up -d` and container recreation.
@@ -366,6 +385,10 @@ investigate rising counts rather than simply raising the cap. Reduce enabled
 sources, archive work or history if the measured workload does not fit.
 These host measurements cannot be substituted by tests on a CI runner.
 
+For SD card versus NVMe I/O, iowait and render statistics before and after a
+change use `scripts/ha_measure.sh` (read-only), see
+[docs/storage.md](docs/storage.md#measurements).
+
 When migrating, stop and remove any previously installed
 `ha_satimage_watchtower` container. GitHub Actions still publishes images
 for release tags; tag builds do not trigger deployment.
@@ -374,7 +397,7 @@ for release tags; tag builds do not trigger deployment.
 
 ha_satimage uses [semantic versioning](https://semver.org/). The version is
 defined in `src/ha_satimage/__init__.py` (`__version__`) and in
-`pyproject.toml` (both must match; current: **1.3.0**). It is shown in the
+`pyproject.toml` (both must match; current: **1.11.0**). It is shown in the
 web UI footer and returned by `GET /api/version`.
 
 Releases are git tags `vX.Y.Z`; CI builds them into the image tags `X.Y.Z`,

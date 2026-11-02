@@ -3,12 +3,19 @@
 A ``logging.Handler`` keeps the latest entries in a ring buffer. Each entry
 gets a sequential ID so the UI can fetch only new lines via ``?after=<id>``.
 Optionally, logs are also written to a rotating file under
-``<data dir>/logs/`` so they survive a restart.
+``<data dir>/logs/`` (bounded: ``FILE_MAX_BYTES`` × ``FILE_BACKUPS``) so
+they survive a restart.
+
+Standard output goes to Docker's log driver, i.e. Docker's data directory
+(on the Raspberry Pi the SD card). It only needs what the file does not
+already hold, so its level is set separately with
+``HA_SATIMAGE_STDOUT_LOG_LEVEL`` (the image sets ``WARNING``).
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from collections import deque
 from datetime import datetime, timezone
@@ -19,6 +26,15 @@ LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 
 # Access logs from UI polling would drown out everything else.
 _IGNORED_LOGGERS = ("uvicorn.access",)
+FILE_MAX_BYTES = 1_000_000
+FILE_BACKUPS = 3
+STDOUT_LEVEL_ENV = "HA_SATIMAGE_STDOUT_LOG_LEVEL"
+
+
+def stdout_level() -> int:
+    raw = os.environ.get(STDOUT_LEVEL_ENV, "INFO").strip().upper()
+    level = logging.getLevelName(raw)
+    return level if isinstance(level, int) else logging.INFO
 
 
 class LogBuffer(logging.Handler):
@@ -64,6 +80,7 @@ def install(capacity: int = 1000, log_dir: Path | None = None) -> LogBuffer:
     if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
         stream = logging.StreamHandler()
         stream.setFormatter(logging.Formatter(LOG_FORMAT))
+        stream.setLevel(stdout_level())
         root.addHandler(stream)
 
     # APScheduler logs every job run at INFO - that drowns out the actual
@@ -74,9 +91,12 @@ def install(capacity: int = 1000, log_dir: Path | None = None) -> LogBuffer:
     handlers: list[logging.Handler] = [buffer]
     if log_dir is not None:
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            # Only the "logs" directory itself: a missing data directory
+            # (disk not mounted) must not be created here.
+            log_dir.mkdir(exist_ok=True)
             file_handler = RotatingFileHandler(
-                log_dir / "ha_satimage.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+                log_dir / "ha_satimage.log", maxBytes=FILE_MAX_BYTES,
+                backupCount=FILE_BACKUPS, encoding="utf-8",
             )
             file_handler.setLevel(logging.INFO)
             file_handler.setFormatter(logging.Formatter(LOG_FORMAT))

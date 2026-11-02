@@ -21,6 +21,7 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ha_satimage.geometry import EUROPE_EXTENT, BoundingBox, bounding_box
+from ha_satimage.atomic import write_text_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -538,9 +539,9 @@ def save_config(config: AppConfig, path: Path | None = None) -> None:
     """Save the configuration as a YAML file (creating the directory if needed)."""
     resolved = path or config_path()
     resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(
-        yaml.safe_dump(config.model_dump(), sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
+    # Atomic: a crash while saving must not leave a truncated configuration.
+    write_text_atomic(
+        resolved, yaml.safe_dump(config.model_dump(), sort_keys=False, allow_unicode=True)
     )
 
 

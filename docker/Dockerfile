@@ -30,6 +30,9 @@ ENV MAMBA_DOCKERFILE_ACTIVATE=1 \
     HA_SATIMAGE_CONFIG=/data/config.yaml \
     SATPY_DATA_DIR=/data/satpy \
     XDG_CACHE_HOME=/data/cache/xdg \
+    TMPDIR=/data/tmp \
+    HA_SATIMAGE_STDOUT_LOG_LEVEL=WARNING \
+    MALLOC_ARENA_MAX=2 \
     OMP_NUM_THREADS=1 \
     OMP_THREAD_LIMIT=1 \
     OPENBLAS_NUM_THREADS=1 \
@@ -54,16 +57,26 @@ RUN micromamba run -n base pip install --no-cache-dir \
 # environment is not activated there and `python3` would not be on PATH.
 RUN ln -sf /opt/conda/bin/python /usr/local/bin/python3
 
-RUN mkdir -p /data/frames /data/cache /data/satpy && chown -R $MAMBA_USER:$MAMBA_USER /data
+# Bytecode is compiled at build time, so imports never write .pyc files into
+# the container layer (the system disk) at runtime.
+RUN micromamba run -n base python -m compileall -q /opt/conda/lib/python3.12/site-packages || true
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# No /data in the image and no VOLUME: without the bind mount of the host
+# data directory the container must fail (storage check in the entrypoint),
+# never write into an anonymous volume in Docker's data directory.
 
 COPY docker/entrypoint.sh /usr/local/bin/ha_satimage-entrypoint.sh
 RUN chmod +x /usr/local/bin/ha_satimage-entrypoint.sh
 
 EXPOSE 6060
-VOLUME ["/data"]
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+# Every probe is a process start plus a write of Docker's container state
+# (Docker data directory, on the Raspberry Pi the SD card): every 2 min,
+# with quick probes only during start-up (start-interval, Docker >= 25).
+HEALTHCHECK --interval=2m --timeout=10s --retries=3 --start-period=2m --start-interval=5s \
     CMD /usr/local/bin/python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:6060/healthz')"
 
 ENTRYPOINT ["/usr/local/bin/ha_satimage-entrypoint.sh"]
-CMD ["uvicorn", "ha_satimage.main:app", "--host", "0.0.0.0", "--port", "6060"]
+# No access log: UI polling would write a line per request to Docker's log.
+CMD ["uvicorn", "ha_satimage.main:app", "--host", "0.0.0.0", "--port", "6060", "--no-access-log"]

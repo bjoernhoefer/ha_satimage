@@ -23,7 +23,7 @@
 | Network | Private network; remote sites via any VPN/routing that reaches `<host>:6060` |
 | Auth | None — private network only |
 | Web port | `6060` |
-| State | Host directory bind-mounted to `/data` (`HOST_DATA_DIR`, default `./data`) |
+| State | Host directory bind-mounted to `/data` (`HOST_DATA_DIR`, default `/mnt/data2/ha_satimage/data` on the NVMe, checked by filesystem UUID; see `docs/storage.md`) |
 
 Integration happens **in each Home Assistant instance** (see
 `docs/homeassistant.md`).
@@ -56,6 +56,10 @@ src/ha_satimage/
   satpy_config/    Custom Satpy composite definitions (composites/seviri.yaml, visir.yaml)
   source_sync.py   Sync of the catalogue with the EUMETSAT Data Store (public API)
   storage.py       Storage location candidates, write test, system disk/container warning
+  storage_guard.py Mount identity (filesystem UUID), free space, write test, instance
+                   lock, TMPDIR check; CLI used by the entrypoint (exit 78)
+  backoff.py       Exponential pause of failing (region, source, composite) combinations
+  atomic.py        Atomic file writes (.part + os.replace)
   logbuffer.py     In-memory log (for the UI) + rotating log file
   main.py          FastAPI app: web UI + REST API + image endpoints
   templates/       Jinja2 template of the web UI (incl. fullscreen viewer)
@@ -330,8 +334,10 @@ docker compose up -d
 
 - **Configuration persistence:** all state lives in a host directory
   bind-mounted to `/data`, path set via `HOST_DATA_DIR` in `.env`
-  (default `./data` next to `docker-compose.yml`). The configuration is
-  `<data>/config.yaml`. It survives image updates and container
+  (default `/mnt/data2/ha_satimage/data`). The configuration is
+  `<data>/config.yaml`. The directory is never created automatically
+  (`create_host_path: false`); the storage guard checks it on every start
+  (see "Storage guard" below and `docs/storage.md`). It survives image updates and container
   recreation; backup = copy that directory. `docker/entrypoint.sh` aligns
   the ownership of `/data` (and the selected frame storage location) with
   the internal user on start (see HISTORY.md, "Bind mount ownership").
@@ -372,7 +378,10 @@ docker compose up -d
   by the container label. Manual updates remain
   `docker compose pull && docker compose up -d`.
 - **Compose `.env` variables:** `HOST_DATA_DIR` (host data directory,
-  default `./data`), `HA_SATIMAGE_TAG` (image tag, default `latest`; pin
+  default `/mnt/data2/ha_satimage/data`), `HA_SATIMAGE_REQUIRE_FS_UUID`
+  (default: NVMe UUID of nzbpi; `none` disables), `HA_SATIMAGE_FRAMES_FS_UUID`,
+  `HA_SATIMAGE_MIN_FREE_MB` (1024), `HA_SATIMAGE_RENDER_MEMORY_MB` (empty =
+  container limit − 192 MiB), `HA_SATIMAGE_TAG` (image tag, default `latest`; pin
   e.g. `1.0` to stay on a minor line), `HA_SATIMAGE_PORT` (default `6060`),
   plus the optional EUMETSAT credentials. `HA_SATIMAGE_DATA_DIR` is an
   in-container app variable, not the host path.
@@ -383,7 +392,7 @@ docker compose up -d
 
 - Semantic version in `src/ha_satimage/__init__.py` (`__version__`) and
   `pyproject.toml`; both must match (`tests/test_version.py`). Current:
-  **1.10.1**.
+  **1.11.0**.
 - Shown in the web UI footer and returned by `GET /api/version`.
 - Releases are git tags `vX.Y.Z`; CI builds them into the image tags
   `X.Y.Z`, `X.Y` and `latest`.
@@ -427,6 +436,27 @@ a format selection (`viewer-format`, remembered in the browser via
 `localStorage`, in the hash as `f=`): history JPEG (default, fast) or PNG
 (original); live MJPEG stream, MP4 video (`<video>`, zoomable) or GIF. The
 archive offers JPEG and PNG as well.
+
+### Storage guard and SD card protection
+
+- Everything persistent and every larger temporary file lives below
+  `/data` (`TMPDIR=/data/tmp`, `SATPY_DATA_DIR`, `XDG_CACHE_HOME`); never
+  write to the container filesystem (Docker data directory = system disk).
+  New features must not add host-specific paths to the code.
+- `storage_guard.check_storage` runs in the entrypoint (as root without
+  write test, then as the service user), at app start (plus instance lock),
+  every 5 min (`storage-health` job: pauses downloads/renders while it
+  fails) and before storage location changes. Never create a missing data
+  directory or its parents; never fall back to another path.
+- Render child processes: forkserver with preloaded modules
+  (`HA_SATIMAGE_RENDER_START_METHOD`), RSS watchdog against the memory
+  budget, windows coarsened to `MAX_SOURCE_OVERSAMPLING`. Resource errors
+  (`RenderResourceError`: timeout, OOM kill, budget, `MemoryError`) are
+  never retried immediately; the scheduler pauses the combination via
+  `FailureBackoff`. Only non-resource crashes retry once (after 10 s).
+- The host deployment keeps the names `ha_satellite` (service/container,
+  `ha-deploy` stack, concurrency group); migration tool
+  `scripts/ha_storage_migrate.py`, measurement `scripts/ha_measure.sh`.
 
 ## Operating rules
 
@@ -492,6 +522,7 @@ archive offers JPEG and PNG as well.
 | `POST /api/archive/render` | Archive all enabled sources now (all regions, all image types) |
 | `POST /api/archive/clear` | Delete archived images and FCI raw slots, retain normal history; persist a cutoff so only newer scans are downloaded/archived |
 | `GET /api/logs` | Log entries (`?after=<id>`, `?format=text`) |
+| `GET /api/diagnostics` | Render runs/failures by cause, parallelism, peak RSS, memory budget, queues, backoff, storage state, download errors |
 | `GET /live/{region}` | Memorable address: opens the live stream in the browser |
 | `GET /healthz` | Liveness |
 | `GET /regions/{region}/latest.png` | Newest frame |

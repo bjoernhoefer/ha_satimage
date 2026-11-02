@@ -22,7 +22,7 @@ from fastapi.responses import (
 )
 from fastapi.templating import Jinja2Templates
 
-from ha_satimage import __version__, location_change, logbuffer, media, storage
+from ha_satimage import __version__, location_change, logbuffer, media, storage, storage_guard
 from ha_satimage.archive import RenderArchive, get_render_archive
 from ha_satimage.buffer import BufferManager
 from ha_satimage.config import (
@@ -71,8 +71,14 @@ buffer_manager = BufferManager(frames_dir_for(config_store.get()))
 status_store = StatusStore()
 source_sync = SourceSync(config_store, DATA_DIR / "source_sync.json")
 maintenance_schedule = MaintenanceSchedule(DATA_DIR / "maintenance.json")
+def check_storage() -> list:
+    """Identity, free space and write test of /data and the frame location."""
+    return storage_guard.check_storage(DATA_DIR, buffer_manager.base_dir)
+
+
 scheduler = RenderScheduler(
-    config_store, buffer_manager, status_store, source_sync, maintenance_schedule
+    config_store, buffer_manager, status_store, source_sync, maintenance_schedule,
+    storage_check=check_storage,
 )
 satellite_map = location_change.SatelliteMap(DATA_DIR / "location_map")
 
@@ -86,14 +92,34 @@ async def lifespan(_app: FastAPI):
         __version__, DATA_DIR, buffer_manager.base_dir, os.getuid(), os.getgid(),
     )
     try:
-        storage.ensure_writable(buffer_manager.base_dir)
-    except storage.StorageError as exc:
-        logger.error("%s", exc)
+        storage_guard.acquire_instance_lock(DATA_DIR)
+        reports = await run_in_threadpool(check_storage)
+    except (storage_guard.StorageGuardError, OSError) as exc:
+        # No fallback: never write to another disk than the configured one.
+        logger.critical("Storage check failed - not starting: %s", exc)
+        raise SystemExit(storage_guard.EXIT_STORAGE) from exc
+    for report in reports:
+        logger.info(
+            "Storage %s: %s (%s%s), %s MiB free",
+            report.path, report.device, report.fstype,
+            f", UUID {report.fs_uuid}" if report.fs_uuid else ", identity check disabled",
+            report.free_mb,
+        )
+    if buffer_manager.base_dir == DEFAULT_FRAMES_DIR:
+        buffer_manager.base_dir.mkdir(exist_ok=True)
+    try:
+        temp_dir = storage_guard.ensure_temp_dir(DATA_DIR)
+    except storage_guard.StorageGuardError as exc:
+        logger.critical("Temporary directory unusable - not starting: %s", exc)
+        raise SystemExit(storage_guard.EXIT_STORAGE) from exc
+    logger.info("Temporary files in %s", temp_dir)
+    scheduler.check_storage()
     scheduler.start()
     try:
         yield
     finally:
         scheduler.shutdown()
+        storage_guard.release_instance_lock(DATA_DIR)
 
 
 app = FastAPI(title="ha_satimage", version=__version__, lifespan=lifespan)
@@ -216,6 +242,10 @@ async def _save_config(old: AppConfig, new: AppConfig, move_existing: bool) -> i
     moved = 0
     if old_dir != new_dir or buffer_manager.base_dir != new_dir:
         def _relocate() -> int:
+            try:
+                storage_guard.check_new_frames_dir(new_dir, DATA_DIR)
+            except storage_guard.StorageGuardError as exc:
+                raise storage.StorageError(str(exc)) from exc
             storage.ensure_writable(new_dir)
             with scheduler.exclusive():
                 return buffer_manager.relocate(new_dir, move_existing)
@@ -551,6 +581,13 @@ async def get_logs(after: int = 0, limit: int = 500, format: str = "json"):
 @app.get("/api/status")
 async def get_status():
     return JSONResponse(status_store.all())
+
+
+@app.get("/api/diagnostics")
+async def get_diagnostics():
+    """Render child processes (runtime, peak RSS, failures), queues, backoff,
+    storage health of the data filesystem."""
+    return JSONResponse(await run_in_threadpool(scheduler.diagnostics))
 
 
 @app.get("/api/version")

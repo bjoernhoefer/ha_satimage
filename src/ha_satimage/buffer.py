@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ha_satimage.atomic import write_bytes_atomic
+
 INDEX_FILENAME = "_index.json"
 # Derived media (thumbnails, animations), see media.py.
 CACHE_DIRNAME = "_cache"
@@ -74,16 +76,30 @@ class RingBuffer:
             return []
         try:
             raw = json.loads(index_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return []
-        known = {"filename", "created_at", "source", "composite", "borders"}
-        frames = [Frame(**{k: v for k, v in entry.items() if k in known}) for entry in raw]
+            known = {"filename", "created_at", "source", "composite", "borders"}
+            frames = [Frame(**{k: v for k, v in entry.items() if k in known}) for entry in raw]
+        except (ValueError, OSError, TypeError, AttributeError) as exc:
+            # Never treat the frames as orphans because the index is broken
+            # (e.g. power loss while writing): rebuild it from the files.
+            logger.warning("Index of %s unreadable (%s) - rebuilding from files", self.region_dir, exc)
+            return self._frames_from_files()
         # Keep only frames whose file actually exists.
         return [f for f in frames if f.path(self.region_dir).exists()]
 
+    def _frames_from_files(self) -> list[Frame]:
+        frames = []
+        for path in sorted(self.region_dir.glob("*.png")):
+            stem = path.stem.split("-", 1)[0]
+            try:
+                created = datetime.strptime(stem, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            frames.append(Frame(filename=path.name, created_at=created.isoformat()))
+        return frames
+
     def _save_index(self) -> None:
         payload = [f.as_dict() for f in self._frames]
-        self._index_path().write_text(json.dumps(payload), encoding="utf-8")
+        write_bytes_atomic(self._index_path(), json.dumps(payload).encode("utf-8"))
 
     # -- Public API ------------------------------------------------
     def add_frame(
@@ -108,7 +124,9 @@ class RingBuffer:
             while (self.region_dir / filename).exists():
                 filename = f"{stem}-{counter}.png"
                 counter += 1
-            (self.region_dir / filename).write_bytes(data)
+            # Complete or not at all: an interrupted write leaves only a
+            # ".part" file, which the orphan cleanup removes.
+            write_bytes_atomic(self.region_dir / filename, data)
             frame = Frame(
                 filename=filename, created_at=ts.isoformat(), source=source, composite=composite,
                 borders=borders,

@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ha_satimage.config import ConfigStore, SourceDefinition
+from ha_satimage.atomic import write_text_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ class SourceSync:
     def _save(self, state: dict) -> None:
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            self._state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            write_text_atomic(self._state_path, json.dumps(state, indent=2))
         except OSError as exc:
             logger.warning("Could not save sync result: %s", exc)
 

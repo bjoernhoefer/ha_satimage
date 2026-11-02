@@ -9,23 +9,61 @@ services:
     ports:
       - "${HA_SATIMAGE_PORT:-6060}:6060"
     volumes:
-      # Configuration (config.yaml), logs, cache and (by default) the frames.
-      # Lives on the host, so it survives image updates and container
-      # re-creation. Back it up by copying this directory.
-      - ${HOST_DATA_DIR:-./data}:/data
-      # Additional host disks (e.g. /mnt/data). The frame storage location
-      # is chosen in the web UI ("Storage & history") - only paths below
-      # mounted volumes are persistent. Use "/mnt:/mnt:rslave" if disks are
-      # mounted after the container starts.
-      - /mnt:/mnt
+      # Configuration (config.yaml), logs, cache, temporary files and (by
+      # default) the frames. Lives on the host - by default on the NVMe disk
+      # of the Raspberry Pi, not on the SD card - so it survives image
+      # updates and container re-creation. Back it up by copying it.
+      # create_host_path: false - if the disk is not mounted, the path does
+      # not exist and the container does not start (instead of Docker
+      # creating an empty directory on the system disk).
+      - type: bind
+        source: ${HOST_DATA_DIR:-/mnt/data2/ha_satimage/data}
+        target: /data
+        bind:
+          create_host_path: false
+      # Additional host disks (e.g. /mnt/data) for a frame storage location
+      # chosen in the web UI ("Storage & history"). Deliberately the default
+      # propagation (rprivate), not rslave: a disk unmounted on the host
+      # while the container runs stays visible inside instead of exposing
+      # the empty mount point directory on the system disk.
+      - type: bind
+        source: /mnt
+        target: /mnt
+        bind:
+          create_host_path: false
+      # Read-only, for the filesystem identity check (HA_SATIMAGE_REQUIRE_FS_UUID).
+      - type: bind
+        source: /dev/disk/by-uuid
+        target: /run/host-disk-by-uuid
+        read_only: true
+        bind:
+          create_host_path: false
     environment:
       # UID/GID used for writing - must match the owner of the data
       # directories on the host (see `id` on the host).
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
+      # Filesystem UUID(s) /data must be on (`findmnt -no UUID <dir>` on the
+      # host). Default: NVMe of the Raspberry Pi "nzbpi". Other hosts set
+      # their own UUID or explicitly "none" to disable the check.
+      - HA_SATIMAGE_REQUIRE_FS_UUID=${HA_SATIMAGE_REQUIRE_FS_UUID:-e16ccc22-790c-4f89-97f5-b7caca060bbd}
+      # Same for a frame storage location outside /data (default: as above).
+      - HA_SATIMAGE_FRAMES_FS_UUID=${HA_SATIMAGE_FRAMES_FS_UUID:-}
+      # Below this free space (MiB) the start fails and running downloads/renders pause.
+      - HA_SATIMAGE_MIN_FREE_MB=${HA_SATIMAGE_MIN_FREE_MB:-1024}
+      # Memory budget of one render child process in MiB (empty = container
+      # limit minus 192 MiB, 0 = off).
+      - HA_SATIMAGE_RENDER_MEMORY_MB=${HA_SATIMAGE_RENDER_MEMORY_MB:-}
       # Optional: overrides the credentials stored via the UI.
       - EUMETSAT_CONSUMER_KEY=${EUMETSAT_CONSUMER_KEY:-}
       - EUMETSAT_CONSUMER_SECRET=${EUMETSAT_CONSUMER_SECRET:-}
+    # Standard output lands in Docker's data directory (system disk):
+    # bounded, and the image only logs warnings there (full log in /data/logs).
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"
     labels:
       # GitHub Actions deploys updates; false also blocks host-wide Watchtower.
       - com.centurylinklabs.watchtower.enable=false

@@ -1,0 +1,30 @@
+# Optional host unit (template): start the ha_satimage container only once
+# its data disk is mounted - covers a slow or late NVMe mount at boot.
+#
+# Docker's own autostart (restart: unless-stopped) does not retry a
+# container whose bind source is missing (create_host_path: false), and the
+# container refuses to run on the wrong filesystem (storage guard, exit 78).
+# This unit retries the start after the mount. It does not change
+# docker.service and does not affect other containers.
+#
+# Install (after review, adjust path/container name):
+#   sudo cp ha-satimage-after-mount.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable ha-satimage-after-mount.service
+[Unit]
+Description=Start ha_satimage after its data disk is mounted
+Requires=docker.service
+After=docker.service
+# Pulls in and orders after the .mount unit of this path; if the disk is
+# missing, this unit fails (visible in systemctl --failed) instead of the
+# container writing to the system disk.
+RequiresMountsFor=/mnt/data2/ha_satimage/data
+ConditionPathIsMountPoint=/mnt/data2
+
+[Service]
+Type=oneshot
+# Container name of the managed deployment (repository Compose: ha_satimage).
+ExecStart=/usr/bin/docker start ha_satellite
+
+[Install]
+WantedBy=multi-user.target
