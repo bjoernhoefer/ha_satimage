@@ -74,6 +74,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Incomplete render output (truncated PNG) is no longer stored as a frame.
+- `scripts/ha_measure.sh`: host disk counters above 2 GiB showed 0 MiB
+  (mawk `%d`), a repeated vmstat header broke the iowait maximum, a missing
+  `/api/diagnostics` printed a traceback; it now also reports the memory
+  peak of the measurement interval.
 - Image build: `TMPDIR=/data/tmp` is only set for the runtime (micromamba
   failed at build time because `/data` does not exist in the image).
 - Archive runs pause a combination only after a resource error; a single
