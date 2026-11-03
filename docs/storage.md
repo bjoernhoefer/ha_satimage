@@ -154,7 +154,12 @@ sudo ionice -c3 nice python3 /tmp/ha_storage_migrate.py copy   # repeatable
 `preflight` checks root, rsync, the source, the target's filesystem UUID
 (nothing is created if the NVMe is not mounted), free space (source size −
 already copied + 10 % + 2 GiB reserve), a foreign non-empty target and the
-containers using the paths. `copy` uses `rsync -aHAX --numeric-ids`
+containers using the paths. Only mounts of the source/target itself or a
+path below it count (plus any overlapping mount of another
+ha_satellite/ha_satimage instance); broad parent mounts of other containers
+such as `/` (node_exporter) or `/mnt/data2` (filebrowser, radarr, sabnzbd)
+are only listed as `parent_mounts` and do not block. `ha_nzbpi_switch.sh`
+stops before touching the service if anything else would block. `copy` uses `rsync -aHAX --numeric-ids`
 (owners, permissions, times, hard links, ACLs, xattrs; without
 `.instance.lock`, `tmp/`, `*.part`) at idle I/O priority. Repeat it shortly
 before the maintenance window to keep the final sync short.

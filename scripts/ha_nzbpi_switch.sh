@@ -77,7 +77,16 @@ case "$FILES" in *,*|"") fail "container uses '$FILES' - exactly one Compose fil
 echo "Container $CONTAINER: project $PROJECT, service $SERVICE, file $FILES"
 current=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$CONTAINER")
 echo "/data currently from: $current"
-"${MIGRATE[@]}" preflight
+preflight=$("${MIGRATE[@]}" preflight)
+echo "$preflight"
+# finalize refuses while containers can write the data; apart from the
+# service itself (stopped in step 4) none may do so - checked before the stop.
+blockers=$(python3 -c '
+import json, sys
+users = json.loads(sys.argv[1]).get("containers")
+print("unknown: %s" % users if isinstance(users, str) else " ".join(u for u in users if u != sys.argv[2]))' \
+    "$preflight" "$CONTAINER")
+[ -z "$blockers" ] || fail "other containers mount the data ($blockers) - the final sync would refuse after the stop; stop or reconfigure them first"
 
 # A frame storage location outside /data (UI "Storage location") is checked
 # by the guard as well: same disk = nothing to do, another disk = its UUID

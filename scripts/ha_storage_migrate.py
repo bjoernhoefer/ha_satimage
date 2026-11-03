@@ -31,7 +31,11 @@ Safety rules:
 - The target's filesystem must have the expected UUID (``findmnt``) -
   if the disk is not mounted, nothing is created on the system disk.
 - ``finalize`` and ``rollback`` refuse while any running container mounts
-  the source or the target. This tool never stops containers.
+  the source or the target (or a path inside them), or while another
+  ha_satellite/ha_satimage container mounts a directory above them (e.g.
+  ``/mnt``). Other containers with only a broad parent mount (``/`` for a
+  monitoring agent, ``/mnt/data2`` for a file browser) are reported by
+  ``preflight`` but do not block. This tool never stops containers.
 - After ``finalize`` a further ``copy``/``finalize`` is refused (it would
   overwrite data the new instance wrote); use ``rollback`` first.
 """
@@ -102,25 +106,53 @@ def directory_size(path: Path) -> int:
     return total
 
 
-def containers_using(paths: list[Path]) -> list[str]:
-    """Names of running containers that bind-mount one of the paths (or below/above)."""
+# Image/name markers of this service (old and new name). A parent mount of
+# such a container (e.g. /mnt) can reach the data and blocks finalize; other
+# containers with broad parent mounts (/, /mnt/data2) are only reported.
+OWN_MARKERS = ("ha_satellite", "ha_satimage", "ha-satellite", "ha-satimage")
+
+
+def mount_users(paths: list[Path]) -> dict[str, list[str]]:
+    """Running containers by how they mount the paths.
+
+    ``direct``: bind-mounts a path itself or something inside it.
+    ``parent``: only bind-mounts a directory above it (e.g. ``/`` or ``/mnt``).
+    """
     ids = run(["docker", "ps", "-q"]).stdout.split()
     if not ids:
-        return []
+        return {"direct": [], "parent": [], "own_parent": []}
     details = json.loads(run(["docker", "inspect", *ids]).stdout)
     wanted = [os.path.realpath(p) for p in paths]
-    users = []
+    direct, parent, own_parent = set(), set(), set()
     for container in details:
+        name = container.get("Name", "?").lstrip("/")
+        image = str(container.get("Config", {}).get("Image", ""))
+        own = any(marker in f"{name} {image}".lower() for marker in OWN_MARKERS)
         for mount in container.get("Mounts", []):
             source = os.path.realpath(mount.get("Source", ""))
-            if any(_related(source, p) for p in wanted):
-                users.append(container.get("Name", "?").lstrip("/"))
-                break
-    return sorted(set(users))
+            if any(_within(source, p) for p in wanted):
+                direct.add(name)
+            elif any(_within(p, source) for p in wanted):
+                (own_parent if own else parent).add(name)
+    parent -= direct | own_parent
+    own_parent -= direct
+    return {"direct": sorted(direct), "parent": sorted(parent), "own_parent": sorted(own_parent)}
+
+
+def containers_using(paths: list[Path]) -> list[str]:
+    """Running containers that can write the data: direct mounts, plus
+    parent mounts of another ha_satellite/ha_satimage instance."""
+    users = mount_users(paths)
+    return sorted(set(users["direct"]) | set(users["own_parent"]))
+
+
+def _within(a: str, b: str) -> bool:
+    """True if path ``a`` is ``b`` or lies below it."""
+    return a == b or a.startswith(b.rstrip("/") + "/")
 
 
 def _related(a: str, b: str) -> bool:
-    return a == b or a.startswith(b.rstrip("/") + "/") or b.startswith(a.rstrip("/") + "/")
+    return _within(a, b) or _within(b, a)
 
 
 class Migration:
@@ -224,7 +256,12 @@ class Migration:
         info = self.check_space()
         info["phase"] = self.phase
         try:
-            info["containers"] = containers_using([self.source, self.target])
+            users = mount_users([self.source, self.target])
+            info["containers"] = sorted(set(users["direct"]) | set(users["own_parent"]))
+            if users["parent"]:
+                # Broad mounts such as / or /mnt/data2 (monitoring, file browser);
+                # they do not block finalize.
+                info["parent_mounts"] = users["parent"]
         except (MigrationError, OSError, ValueError) as exc:
             info["containers"] = f"unknown ({exc})"
         if os.geteuid() != 0:

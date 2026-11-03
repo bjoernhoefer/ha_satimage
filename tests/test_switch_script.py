@@ -45,6 +45,7 @@ case "$1" in
                   up) grep -q "source: $STUB_TARGET" "$file" && echo "$STUB_TARGET" > "$state"; [ -n "$STUB_FAIL_UP" ] && exit 1; exit 0;; esac
       shift; done;;
   inspect)
+    if [ "$2" != -f ] && [ -n "$STUB_PS_JSON" ]; then echo "$STUB_PS_JSON"; exit 0; fi
     if [ "$2" = -f ]; then
       case "$3" in
         *project.working_dir*) dirname "$STUB_COMPOSE";;
@@ -55,7 +56,7 @@ case "$1" in
         *Health*) echo healthy;;
       esac
     fi;;
-  ps) ;;
+  ps) [ -n "$STUB_PS_JSON" ] && echo other; exit 0;;
   port) echo "0.0.0.0:6060";;
   stop) ;;
 esac
@@ -175,3 +176,21 @@ def test_failed_start_reports_without_rollback(host):
          "--target", str(host["target"]), "status"],
         env=host["env"], capture_output=True, text=True, check=True,
     ).stdout)
+
+
+def test_neighbours_with_parent_mounts_pass_but_a_direct_user_stops_before_the_stop(host):
+    nvme = str(host["dir"] / "nvme")
+    neighbours = [
+        {"Name": "/node_exporter", "Config": {"Image": "prom/node-exporter"}, "Mounts": [{"Source": "/"}]},
+        {"Name": "/radarr", "Config": {"Image": "linuxserver/radarr"}, "Mounts": [{"Source": nvme}]},
+    ]
+    result = _run(host, STUB_PS_JSON=json.dumps(neighbours))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert '"parent_mounts"' in result.stdout
+
+    backup = {"Name": "/backup", "Config": {"Image": "restic"}, "Mounts": [{"Source": str(host["source"])}]}
+    result = _run(host, "--run", STUB_PS_JSON=json.dumps([*neighbours, backup]))
+    assert result.returncode == 1
+    assert "other containers mount the data (backup)" in result.stderr
+    assert "docker stop" not in (host["dir"] / "calls.log").read_text()
+    assert not host["target"].exists()
