@@ -399,7 +399,7 @@ for release tags; tag builds do not trigger deployment.
 
 ha_satimage uses [semantic versioning](https://semver.org/). The version is
 defined in `src/ha_satimage/__init__.py` (`__version__`) and in
-`pyproject.toml` (both must match; current: **1.11.0**). It is shown in the
+`pyproject.toml` (both must match; current: **1.11.1**). It is shown in the
 web UI footer and returned by `GET /api/version`.
 
 Releases are git tags `vX.Y.Z`; CI builds them into the image tags `X.Y.Z`,

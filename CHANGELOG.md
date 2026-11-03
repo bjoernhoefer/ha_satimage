@@ -3,6 +3,20 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.11.1] — 2026-11-03
+
+### Fixed
+
+- Migration (`scripts/ha_storage_migrate.py`): broad parent mounts of
+  unrelated containers (e.g. `/` for node_exporter, `/mnt/data2` for
+  filebrowser/radarr/sabnzbd) no longer block `finalize`/`rollback`. Only
+  containers mounting the source/target itself or a path below it, and
+  ha_satellite/ha_satimage instances with any overlapping mount, still
+  block. `preflight` lists the parent mounts separately (`parent_mounts`).
+- `scripts/ha_nzbpi_switch.sh` stops before stopping the service if any
+  other container would block the final sync, or if the container list is
+  unknown, instead of failing after the stop.
+
 ## [1.11.0] — 2026-11-02
 
 ### Added

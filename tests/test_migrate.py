@@ -37,7 +37,9 @@ def env(tmp_path, monkeypatch):
     (tmp_path / "nvme").mkdir()
     state = {"uuid": UUID, "containers": []}
     monkeypatch.setattr(migrate, "fs_uuid_of", lambda path: state["uuid"])
-    monkeypatch.setattr(migrate, "containers_using", lambda paths: list(state["containers"]))
+    monkeypatch.setattr(migrate, "mount_users", lambda paths: {
+        "direct": list(state["containers"]), "parent": list(state.get("parent", [])), "own_parent": [],
+    })
     monkeypatch.setattr(migrate.Migration, "check_root", lambda self: None)
     Env = namedtuple("Env", "source target state migration")
     return Env(source, target, state, migrate.Migration(source, target, UUID, reserve_mb=0))
@@ -183,6 +185,75 @@ def test_rollback_keeps_data_written_after_the_switch(env):
     env.migration.copy()
     env.migration.finalize()
     assert env.migration.phase == "finalized"
+
+
+def _docker_ps(monkeypatch, containers):
+    """Fake ``docker ps``/``docker inspect`` with (name, image, [mount sources])."""
+    details = [
+        {"Name": f"/{name}", "Config": {"Image": image}, "Mounts": [{"Source": src} for src in sources]}
+        for name, image, sources in containers
+    ]
+
+    real_run = migrate.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] != "docker":
+            return real_run(cmd, **kwargs)
+        out = "\n".join(str(i) for i in range(len(details))) if cmd[:2] == ["docker", "ps"] else json.dumps(details)
+        return namedtuple("Result", "stdout")(out)
+
+    monkeypatch.setattr(migrate, "run", fake_run)
+
+
+def _neighbours(env):
+    """Containers as on nzbpi; ``nvme`` plays /mnt/data2, its parent /mnt."""
+    nvme = str(env.target.parent.parent)
+    return [
+        ("filebrowser", "filebrowser/filebrowser", [nvme]),
+        ("node_exporter", "prom/node-exporter", ["/"]),
+        ("radarr", "linuxserver/radarr", [nvme, nvme + "/radarr-config"]),
+        ("sabnzbd", "linuxserver/sabnzbd", [nvme]),
+    ]
+
+
+def test_broad_parent_mounts_of_other_containers_do_not_block_finalize(env, monkeypatch):
+    """Regression nzbpi: /, /mnt/data2 of unrelated containers blocked finalize."""
+    monkeypatch.undo()  # real mount_users, with a fake docker
+    monkeypatch.setattr(migrate, "fs_uuid_of", lambda path: UUID)
+    monkeypatch.setattr(migrate.Migration, "check_root", lambda self: None)
+    _docker_ps(monkeypatch, _neighbours(env))
+    paths = [env.source, env.target]
+    users = migrate.mount_users(paths)
+    assert users == {"direct": [], "parent": ["filebrowser", "node_exporter", "radarr", "sabnzbd"],
+                     "own_parent": []}
+    assert migrate.containers_using(paths) == []
+    env.migration.copy()
+    env.migration.finalize()
+    assert env.migration.phase == "finalized"
+
+
+def test_own_instance_or_direct_mounts_still_block(env, monkeypatch):
+    monkeypatch.undo()
+    _docker_ps(monkeypatch, [
+        *_neighbours(env),
+        ("ha_satellite", "ghcr.io/bjoernhoefer/ha_satellite:latest", [str(env.source)]),
+    ])
+    assert migrate.containers_using([env.source, env.target]) == ["ha_satellite"]
+    # A new instance that only mounts /mnt (parent of the target) also blocks.
+    mnt = str(env.target.parent.parent.parent)
+    _docker_ps(monkeypatch, [("ha_satimage_new", "ghcr.io/bjoernhoefer/ha_satimage:1.11.0", [mnt])])
+    assert migrate.containers_using([env.source, env.target]) == ["ha_satimage_new"]
+    # Any container mounting the data itself or a path inside it blocks.
+    _docker_ps(monkeypatch, [("backup", "restic", [str(env.target / "frames")])])
+    assert migrate.containers_using([env.source, env.target]) == ["backup"]
+    with pytest.raises(migrate.MigrationError, match="backup"):
+        env.migration.check_stopped()
+
+
+def test_preflight_reports_parent_mounts_separately(env):
+    env.state["parent"] = ["node_exporter"]
+    info = env.migration.preflight()
+    assert info["containers"] == [] and info["parent_mounts"] == ["node_exporter"]
 
 
 def test_source_and_target_must_not_overlap(tmp_path):
