@@ -159,7 +159,12 @@ path below it count (plus any overlapping mount of another
 ha_satellite/ha_satimage instance); broad parent mounts of other containers
 such as `/` (node_exporter) or `/mnt/data2` (filebrowser, radarr, sabnzbd)
 are only listed as `parent_mounts` and do not block. `ha_nzbpi_switch.sh`
-stops before touching the service if anything else would block. `copy` uses `rsync -aHAX --numeric-ids`
+stops before touching the service if anything else would block.
+The dry run also validates the switched Compose file (`preview-compose`, fed
+to `docker compose config` via stdin; the host file is not written).
+`docker compose config` omits `create_host_path: false` (`"bind": {}`), so
+the check reads the explicit `false` from the file and treats a missing key
+in the effective config as false. `copy` uses `rsync -aHAX --numeric-ids`
 (owners, permissions, times, hard links, ACLs, xattrs; without
 `.instance.lock`, `tmp/`, `*.part`) at idle I/O priority. Repeat it shortly
 before the maintenance window to keep the final sync short.

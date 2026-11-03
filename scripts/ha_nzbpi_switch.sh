@@ -116,6 +116,11 @@ case "$frames_dir" in
     *) fail "frame location $frames_dir is neither below /data nor /mnt - check it in the UI first";;
 esac
 
+# The switched Compose file is validated in the dry run as well (via stdin,
+# the host file is not written), so --run cannot fail there.
+(cd "$DIR" && "${MIGRATE[@]}" "${FRAMES_ARGS[@]}" --service "$SERVICE" preview-compose "$FILES") \
+    || fail "Compose preview for $TARGET failed - nothing changed"
+
 if [ "$RUN" != 1 ]; then
     echo
     echo "Checks passed. Nothing changed. Run again with --run to switch."

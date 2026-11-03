@@ -41,7 +41,8 @@ case "$1" in
     shift
     [ "$1" = version ] && exit 0
     file=""; while [ $# -gt 0 ]; do
-      case "$1" in -f) file="$2"; shift;; config) "$STUB_PY" -c 'import json,sys,yaml; print(json.dumps(yaml.safe_load(open(sys.argv[1]))))' "$file"; exit 0;;
+      case "$1" in -f) file="$2"; shift;; --project-directory) shift;;
+                  config) "$STUB_PY" "$(dirname "$0")/compose_config.py" "$file"; exit 0;;
                   up) grep -q "source: $STUB_TARGET" "$file" && echo "$STUB_TARGET" > "$state"; [ -n "$STUB_FAIL_UP" ] && exit 1; exit 0;; esac
       shift; done;;
   inspect)
@@ -73,6 +74,26 @@ echo "systemctl $*" >> "$STUB_LOG"
 exit 0
 """,
     "systemd-analyze": "#!/bin/bash\nexit 0\n",
+    # Effective config like Compose v2.38: short syntax becomes a long bind
+    # with create_host_path: true, false values are omitted ("bind": {}).
+    "compose_config.py": r"""import json, sys, yaml
+src = sys.stdin if sys.argv[1] == "-" else open(sys.argv[1])
+doc = yaml.safe_load(src)
+for svc in doc.get("services", {}).values():
+    volumes = []
+    for v in svc.get("volumes", []):
+        if isinstance(v, str):
+            parts = v.split(":")
+            v = {"type": "bind", "source": parts[0], "target": parts[1], "bind": {"create_host_path": True}}
+            if len(parts) > 2 and parts[2] == "ro":
+                v["read_only"] = True
+        else:
+            v = dict(v)
+            v["bind"] = {k: x for k, x in (v.get("bind") or {}).items() if x is not False}
+        volumes.append(v)
+    svc["volumes"] = volumes
+print(json.dumps(doc))
+""",
     "ionice": '#!/bin/bash\nshift\nexec "$@"\n',
 }
 

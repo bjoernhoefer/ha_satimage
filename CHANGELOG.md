@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.11.2] — 2026-11-03
+
+### Fixed
+
+- Migration Compose check: `docker compose config` (v2.38) omits
+  `create_host_path: false` from its JSON output (`"bind": {}`), so
+  `check-compose` always reported "bind.create_host_path must be false" and
+  `ha_nzbpi_switch.sh --run` stopped (before the service stop, Compose file
+  restored). A missing key now counts as false (short syntax is normalized
+  to `true` and still fails); the written file itself must say
+  `create_host_path: false` explicitly.
+- New `preview-compose`: the dry run of `ha_nzbpi_switch.sh` now validates
+  the switched Compose file via stdin (host file untouched), so such errors
+  show before `--run`. The switch test stub emulates Compose's normalization.
+
 ## [1.11.1] — 2026-11-03
 
 ### Fixed

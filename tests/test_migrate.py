@@ -380,3 +380,24 @@ def test_apply_compose_refuses_ambiguous_or_missing_service(tmp_path):
     assert not (tmp_path / "docker-compose.yml.before-nvme").exists()
     with pytest.raises(migrate.MigrationError, match="not defined"):
         _apply(tmp_path, service="nope")
+
+
+def test_compose_v238_omits_false_create_host_path():
+    """`docker compose config` (v2.38) prints "bind": {} for create_host_path: false."""
+    target = "/mnt/data2/ha_satimage/data"
+    effective = _compose()
+    for volume in effective["services"]["ha_satellite"]["volumes"]:
+        volume["bind"] = {}
+    assert migrate.check_compose_config(effective, target, UUID) == []
+    # Short syntax is normalized to create_host_path: true and still fails.
+    effective["services"]["ha_satellite"]["volumes"][0]["bind"] = {"create_host_path": True}
+    assert any("create_host_path" in p for p in migrate.check_compose_config(effective, target, UUID))
+
+
+def test_compose_file_must_say_create_host_path_false_explicitly():
+    written = _compose()
+    assert migrate.check_compose_file(written) == []
+    written["services"]["ha_satellite"]["volumes"][0]["bind"] = {}
+    assert migrate.check_compose_file(written)
+    short = {"services": {"ha_satellite": {"volumes": ["/x:/data"]}}}
+    assert migrate.check_compose_file(short)
