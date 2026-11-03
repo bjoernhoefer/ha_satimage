@@ -3,6 +3,90 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.11.0] — 2026-11-02
+
+### Added
+
+- Storage guard (`ha_satimage.storage_guard`): on every container start
+  (entrypoint, before anything is created or chowned), at app start, every
+  5 minutes and before a storage location change, `/data` and an external
+  frame location must be on the expected filesystem
+  (`HA_SATIMAGE_REQUIRE_FS_UUID`, `HA_SATIMAGE_FRAMES_FS_UUID`, resolved via
+  a read-only bind of the host's `/dev/disk/by-uuid`), not on the container
+  filesystem, with at least `HA_SATIMAGE_MIN_FREE_MB` free and writable.
+  Failure = exit code 78 with an explanation, or paused downloads/renders
+  while running; no fallback to the system disk or `/tmp`. Instance lock
+  `/data/.instance.lock` against two instances on the same data.
+- `scripts/ha_storage_migrate.py`: repeatable, verifiable migration of the
+  data directory (preflight, copy while running, finalize with the service
+  stopped, verify, rollback, Compose check); never deletes the source,
+  never overwrites a foreign target, marks the old directory as migrated.
+- `scripts/ha_nzbpi_switch.sh`: one controlled run of the switch on nzbpi
+  (checks, copy, Compose rewrite + validation before the stop, final sync,
+  verified start, then the systemd unit); dry check without `--run`, no
+  automatic rollback. `ha_storage_migrate.py apply-compose` rewrites the
+  host Compose file idempotently with a backup.
+- `scripts/ha_measure.sh`: read-only before/after measurement (SD vs. NVMe
+  I/O per device, container `io.stat`, memory peak, OOM kills, iowait,
+  render statistics). Optional systemd template
+  `docker/systemd/ha-satimage-after-mount.service`.
+- `GET /api/diagnostics`: render runs and failures by cause, parallelism,
+  peak RSS, memory budget, queues, backoff, storage state, download errors.
+- Documentation `docs/storage.md` (layout, guard, migration, rollback,
+  measurements, remaining host dependencies).
+- Log levels: `HA_SATIMAGE_LOG_LEVEL` (UI log + log file, default `INFO`)
+  and `HA_SATIMAGE_STDOUT_LOG_LEVEL` (container output = Docker log on the
+  system disk, default `WARNING`) are defaults; the "Logs" section of the web
+  UI (config `logging.level` / `logging.stdout_level`) changes both at
+  runtime. `DEBUG` only affects ha_satimage's own loggers.
+- Every protection logs what it does: active limits at start-up ("Resource
+  protection: ..."), coarsened windows, backoff pauses, repeated failures
+  and recovery, skipped paused archive combinations, de-duplicated queue
+  entries, storage problems and recovery.
+
+### Changed
+
+- **Compose default data directory** `HOST_DATA_DIR` is now
+  `/mnt/data2/ha_satimage/data` (NVMe of the reference Raspberry Pi) with
+  the matching UUID check; all binds use `create_host_path: false`. Other
+  hosts must set `HOST_DATA_DIR` and `HA_SATIMAGE_REQUIRE_FS_UUID` (or
+  `none`). The image has no UUID default; the managed `ha_satellite`
+  deployment keeps its names (see docs/storage.md).
+- Render child processes start from a pre-loaded forkserver instead of
+  `spawn` (no ~200 MiB module re-read per render from the image layers).
+- Render windows much finer than the output are block-averaged before
+  resampling (`HA_SATIMAGE_MAX_SOURCE_OVERSAMPLING`, default 4): the Europe
+  overview from HRV/1 km data peaked at ~1.3 GiB (synthetic), now ~0.6 GiB.
+- RSS watchdog with a memory budget per render child
+  (`HA_SATIMAGE_RENDER_MEMORY_MB`, default container limit − 192 MiB).
+  Timeouts, OOM kills (`memory.events`), budget overruns and `MemoryError`
+  are resource errors: no immediate retry, the combination pauses with
+  exponential backoff (15 min … 6 h). Other crashes retry once after 10 s.
+- Download errors back off exponentially (up to 1 h); one pending render per
+  region at most.
+- Temporary files (`TMPDIR=/data/tmp`, incl. MP4 encoding) on the data disk;
+  bytecode compiled into the image; no `VOLUME`; recursive `chown` only when
+  the top-level owner differs.
+- Logs: Docker log limited to 2 × 2 MB, stdout only warnings
+  (`HA_SATIMAGE_STDOUT_LOG_LEVEL`), no uvicorn access log, healthcheck every
+  2 min; every render child logs outcome, duration and peak RSS.
+
+### Fixed
+
+- Incomplete render output (truncated PNG) is no longer stored as a frame.
+- `scripts/ha_measure.sh`: host disk counters above 2 GiB showed 0 MiB
+  (mawk `%d`), a repeated vmstat header broke the iowait maximum, a missing
+  `/api/diagnostics` printed a traceback; it now also reports the memory
+  peak of the measurement interval.
+- Image build: `TMPDIR=/data/tmp` is only set for the runtime (micromamba
+  failed at build time because `/data` does not exist in the image).
+- Archive runs pause a combination only after a resource error; a single
+  broken raw slot is retried by the next run instead of pausing the image type.
+- Windows below 4 Mpx are never coarsened (HRV detail of regular regions kept).
+- Frames, ring buffer indexes and state files are written atomically; an
+  unreadable index is rebuilt from the frame files instead of deleting all
+  frames as orphans.
+
 ## [1.10.1] — 2026-11-01
 
 ### Fixed

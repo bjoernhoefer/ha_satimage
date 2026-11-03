@@ -670,6 +670,7 @@ def test_render_subprocess_retries_once_after_crash(monkeypatch):
             raise satpy_render.RenderProcessCrashed("Render process killed by SIGSEGV")
         return b"png", "t"
 
+    monkeypatch.setattr(satpy_render, "RETRY_DELAY_SECONDS", 0)
     monkeypatch.setattr(satpy_render, "_run_once", flaky)
     assert satpy_render.render_in_subprocess(object()) == (b"png", "t")
     assert len(calls) == 2

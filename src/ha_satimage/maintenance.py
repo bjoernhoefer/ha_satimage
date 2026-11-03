@@ -32,6 +32,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from ha_satimage.atomic import write_text_atomic
+
 logger = logging.getLogger(__name__)
 
 URL_ENV = "HA_SATIMAGE_MAINTENANCE_URL"
@@ -216,7 +218,7 @@ class MaintenanceSchedule:
     def _save(self) -> None:
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            self._state_path.write_text(json.dumps(self.state(), indent=2), encoding="utf-8")
+            write_text_atomic(self._state_path, json.dumps(self.state(), indent=2))
         except OSError as exc:
             logger.warning("Could not save maintenance schedule: %s", exc)
 

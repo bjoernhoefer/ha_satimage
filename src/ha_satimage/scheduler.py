@@ -29,8 +29,12 @@ Uses APScheduler with its own thread pool so the FastAPI web server
   (``media.prewarm``) so playback starts immediately.
 
 Errors (missing slots, API timeouts, invalid credentials) are logged and
-recorded in the StatusStore but never crash the service; the next
-scheduled run retries (simple retry).
+recorded in the StatusStore but never crash the service. Retries are
+bounded: download errors back off exponentially (up to one hour), and a
+render combination that failed for memory/time (or any archive render
+failure) pauses with exponential backoff (``backoff.py``). At most one
+render per region is queued. A storage health job pauses downloads and
+renders while the data filesystem is missing, wrong or full.
 """
 
 from __future__ import annotations
@@ -43,12 +47,13 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from ha_satimage import media
+from ha_satimage.backoff import FailureBackoff, is_resource_error
 from ha_satimage.archive import get_render_archive, region_signature
 from ha_satimage.buffer import BufferManager
 from ha_satimage.config import (
@@ -87,6 +92,10 @@ DOWNLOAD_JOB_PREFIX = "download-"
 MEDIA_JOB_PREFIX = "media-"
 ARCHIVE_JOB_PREFIX = "archive-"
 SYNC_JOB_ID = "source-sync"
+STORAGE_JOB_ID = "storage-health"
+STORAGE_CHECK_INTERVAL = timedelta(minutes=5)
+# Download errors: first retry after min(cycle, ERROR_RETRY), doubling up to this.
+MAX_ERROR_RETRY = timedelta(hours=1)
 # Archive renders run in their own executor so they never occupy the
 # threads of the preview renders and downloads.
 ARCHIVE_EXECUTOR = "archive"
@@ -127,6 +136,7 @@ class DownloadState:
     last_new_at: datetime | None = None
     next_expected: datetime | None = None
     last_error: str | None = None
+    consecutive_errors: int = 0
     # Active maintenance window (no Data Store queries meanwhile).
     maintenance: Window | None = None
     # Hourly verification query during maintenance.
@@ -151,6 +161,7 @@ class RenderScheduler:
         status_store: StatusStore,
         source_sync: "SourceSync | None" = None,
         maintenance: MaintenanceSchedule | None = None,
+        storage_check: Callable[[], list] | None = None,
     ) -> None:
         self._config_store = config_store
         self._buffers = buffer_manager
@@ -163,6 +174,16 @@ class RenderScheduler:
         self._preview_lock = threading.Lock()
         # Sources with an archive run queued but not started yet.
         self._archive_queued: set[str] = set()
+        # Regions with a one-off render queued but not started yet.
+        self._render_queued: set[str] = set()
+        self._queue_lock = threading.Lock()
+        # Failing (region, source, composite) combinations pause (backoff.py).
+        self._backoff = FailureBackoff()
+        # Storage health: problem text while downloads/renders are paused.
+        self._storage_check = storage_check
+        self._storage_problem: str | None = None
+        self._storage_reports: list[dict] = []
+        self._storage_checked_at: datetime | None = None
         self._scheduler = BackgroundScheduler(executors={
             "default": ThreadPoolExecutor(10),
             ARCHIVE_EXECUTOR: ThreadPoolExecutor(1),
@@ -191,7 +212,73 @@ class RenderScheduler:
 
     def reload(self) -> None:
         """After configuration changes: set up jobs again."""
+        # A changed configuration may fix a failing combination: retry it.
+        self._backoff.clear()
         self._reschedule()
+
+    # -- Storage health -------------------------------------------------------
+    def check_storage(self) -> bool:
+        """Re-check the data filesystem; pause work while it is unusable."""
+        if self._storage_check is None:
+            return True
+        from ha_satimage.storage_guard import StorageGuardError
+
+        try:
+            reports = self._storage_check()
+        except StorageGuardError as exc:
+            problem = str(exc)
+            reports = []
+        except Exception as exc:  # pragma: no cover - defensive
+            problem = f"Storage check failed: {exc}"
+            reports = []
+        else:
+            problem = None
+        self._storage_checked_at = datetime.now(timezone.utc)
+        self._storage_reports = [r.as_dict() for r in reports]
+        for report in reports:
+            for warning in report.warnings:
+                logger.warning("Storage: %s", warning)
+        if problem and problem != self._storage_problem:
+            logger.error("Storage problem - downloads and renders paused: %s", problem)
+        elif not problem and self._storage_problem:
+            logger.info("Storage usable again - resuming downloads and renders")
+        elif not problem:
+            logger.debug(
+                "Storage ok: %s",
+                ", ".join(f"{r.path} {r.free_mb} MiB free" for r in reports),
+            )
+        self._storage_problem = problem
+        return problem is None
+
+    @property
+    def storage_problem(self) -> str | None:
+        return self._storage_problem
+
+    def diagnostics(self) -> dict:
+        from ha_satimage.sources.satpy_render import STATS
+
+        with self._queue_lock:
+            queued = sorted(self._render_queued)
+        return {
+            "render": STATS.snapshot(),
+            "render_queue": queued,
+            "archive_queue": sorted(self._archive_queued),
+            "backoff": self._backoff.snapshot(),
+            "storage": {
+                "paused": self._storage_problem is not None,
+                "problem": self._storage_problem,
+                "checked_at": _iso(self._storage_checked_at),
+                "paths": self._storage_reports,
+            },
+            "downloads": {
+                source_id: {
+                    "consecutive_errors": state.consecutive_errors,
+                    "last_error": state.last_error,
+                    "due": _iso(state.due),
+                }
+                for source_id, state in self._downloads.items()
+            },
+        }
 
     @contextmanager
     def exclusive(self, timeout: float = 120.0):
@@ -254,6 +341,16 @@ class RenderScheduler:
         config = self._config_store.get()
         self._schedule_sync(config.sources.auto_sync_hours)
         now = datetime.now(timezone.utc)
+        if self._storage_check is not None and self._scheduler.get_job(STORAGE_JOB_ID) is None:
+            self._scheduler.add_job(
+                self.check_storage,
+                "interval",
+                seconds=STORAGE_CHECK_INTERVAL.total_seconds(),
+                id=STORAGE_JOB_ID,
+                next_run_time=now + STORAGE_CHECK_INTERVAL,
+                max_instances=1,
+                coalesce=True,
+            )
 
         download_ids = self.download_sources(config)
         for source_id in download_ids:
@@ -455,6 +552,10 @@ class RenderScheduler:
             return False
         with self._download_lock:
             state = self._downloads.setdefault(source_id, DownloadState())
+        if self._storage_problem is not None:
+            logger.debug("Download %s paused: storage problem", source_id)
+            state.due = datetime.now(timezone.utc) + RETRY_INTERVAL
+            return False
         window = self._maintenance_window(config, entry)
         probed = None
         if window is not None:
@@ -483,11 +584,22 @@ class RenderScheduler:
             else:  # pragma: no cover - defensive
                 logger.exception("Download %s: unexpected error", source_id)
             state.last_error = str(exc)
-            state.due = checked + min(cycle, ERROR_RETRY)
+            state.consecutive_errors += 1
+            delay = min(
+                min(cycle, ERROR_RETRY) * 2 ** min(state.consecutive_errors - 1, 10),
+                MAX_ERROR_RETRY,
+            )
+            state.due = checked + delay
+            if state.consecutive_errors > 1:
+                logger.warning(
+                    "Download %s: %d failures in a row - next attempt in %d min",
+                    source_id, state.consecutive_errors, delay.total_seconds() // 60,
+                )
             return False
         if sensing.tzinfo is None:
             sensing = sensing.replace(tzinfo=timezone.utc)
         state.last_error = None
+        state.consecutive_errors = 0
         new = state.last_sensing is None or sensing > state.last_sensing
         if new:
             state.latencies.append(max(checked - sensing, timedelta(0)))
@@ -567,17 +679,40 @@ class RenderScheduler:
             "next_probe_at": _iso(state.next_probe_at) if paused else None,
         }
 
+    def _pause_note(self, key: tuple, exc: BaseException) -> str:
+        """Pause a combination after a resource error (memory/time limit);
+        other errors (e.g. one broken slot) are retried by the next run."""
+        if not is_resource_error(exc):
+            return ""
+        until = self._backoff.failure(key, str(exc))
+        return f" - paused until {until:%H:%M} UTC"
+
     # -- Render ---------------------------------------------------------------
     def _queue_render(self, region_name: str) -> None:
+        """Queue a render; one pending render per region is enough (it
+        renders the newest capture when it starts)."""
+        with self._queue_lock:
+            if region_name in self._render_queued:
+                logger.info("Render %s already queued - not queued twice", region_name)
+                return
+            self._render_queued.add(region_name)
         self._scheduler.add_job(
-            self._run_region,
+            self._run_queued_region,
             args=[region_name],
             id=f"{JOB_ID_PREFIX}now-{region_name}-{next(self._job_counter)}",
             misfire_grace_time=None,
         )
 
+    def _run_queued_region(self, region_name: str) -> None:
+        with self._queue_lock:
+            self._render_queued.discard(region_name)
+        self._run_region(region_name)
+
     def trigger_now(self, region_name: str) -> None:
-        """For the UI button "Refresh now"."""
+        """For the UI button "Refresh now" (an explicit retry ends a pause)."""
+        region = self._config_store.get().region(region_name)
+        if region is not None:
+            self._backoff.success((region.name, region.source, region.composite))
         self._scheduler.add_job(
             self._run_region,
             args=[region_name],
@@ -607,7 +742,7 @@ class RenderScheduler:
         """
         with self._download_lock:
             if source_id in self._archive_queued:
-                logger.debug("Archive %s: run already queued", source_id)
+                logger.info("Archive %s: run already queued - not queued twice", source_id)
                 return
             self._archive_queued.add(source_id)
         self._scheduler.add_job(
@@ -734,6 +869,15 @@ class RenderScheduler:
             return 0
         archive = get_render_archive(render_archive_root(config))
         composites = archive_composites(entry)
+        paused = [
+            item["key"] for item in self._backoff.snapshot()
+            if item["paused_until"] and item["key"].split("/")[1:2] == [source_id]
+        ]
+        if paused:
+            logger.info(
+                "Archive %s: %d combination(s) paused after failures, skipped: %s",
+                source_id, len(paused), ", ".join(paused),
+            )
         if entry.driver == "mtg_fci":
             stored = self._archive_fci_slots(entry, config, archive, composites)
         else:
@@ -762,6 +906,12 @@ class RenderScheduler:
             for composite in composites:
                 if archive.has(region.name, source_id, composite, sensing):
                     continue
+                if self._storage_problem is not None:
+                    logger.warning("Archive %s stopped: storage problem", source_id)
+                    return stored
+                key = (region.name, source_id, composite)
+                if self._backoff.blocked_until(key):
+                    continue
                 if not self._acquire_for_archive(LOCK_TIMEOUT_SECONDS):
                     logger.warning("Archive %s: render lock busy, skipping", source_id)
                     return stored
@@ -781,8 +931,8 @@ class RenderScheduler:
                     continue
                 except RenderError as exc:
                     logger.error(
-                        "Archive %s / %s / %s failed: %s",
-                        region.name, source_id, composite, exc,
+                        "Archive %s / %s / %s failed: %s%s",
+                        region.name, source_id, composite, exc, self._pause_note(key, exc),
                     )
                     continue
                 except Exception:  # pragma: no cover - defensive
@@ -794,6 +944,7 @@ class RenderScheduler:
                 finally:
                     self._render_lock.release()
                 if image is not None:
+                    self._backoff.success(key)
                     stored += 1
                     logger.info(
                         "Archived %s / %s / %s %s in %.1f s (%d KB)",
@@ -854,6 +1005,8 @@ class RenderScheduler:
                             if key in handled:
                                 continue
                             handled.add(key)
+                            if self._backoff.blocked_until((region.name, entry.id, composite)):
+                                continue
                             if not archive.has(region.name, entry.id, composite, slot.archive_time):
                                 return slot, region, composite
                 return None
@@ -865,6 +1018,10 @@ class RenderScheduler:
                     logger.info("Archive %s: configuration changed, stopping this run", entry.id)
                     break
                 slot, region, composite = task
+                if self._storage_problem is not None:
+                    logger.warning("Archive %s stopped: storage problem", entry.id)
+                    break
+                key = (region.name, entry.id, composite)
                 if not self._acquire_for_archive(LOCK_TIMEOUT_SECONDS):
                     logger.warning("Archive %s: render lock busy, skipping", entry.id)
                     break
@@ -880,9 +1037,12 @@ class RenderScheduler:
                     # Named after the raw slot, so the viewer finds it as pre-rendered.
                     image = archive.store(region.name, entry.id, composite, slot.archive_time, rendered.png)
                 except (RenderError, FileNotFoundError) as exc:
+                    # A memory/time abort would repeat for every retained slot
+                    # (~144 per day): pause the combination instead of an OOM storm.
                     logger.error(
-                        "Archive %s / %s / %s %s failed: %s",
+                        "Archive %s / %s / %s %s failed: %s%s",
                         region.name, entry.id, composite, slot.name, exc,
+                        self._pause_note(key, exc),
                     )
                     continue
                 except Exception:  # pragma: no cover - defensive
@@ -895,6 +1055,7 @@ class RenderScheduler:
                     self._render_lock.release()
                 if image is None:
                     continue
+                self._backoff.success(key)
                 stored += 1
                 logger.info(
                     "Archived %s / %s / %s %s in %.1f s (%d KB)",
@@ -920,6 +1081,20 @@ class RenderScheduler:
 
         next_run_at = self._next_run_for(config, region.source)
         new_frame = None
+        if self._storage_problem is not None:
+            logger.warning("Render %s skipped: storage problem", region_name)
+            self._status.record_error(
+                region.name, f"Paused: {self._storage_problem}", next_run_at
+            )
+            return
+        backoff_key = (region.name, region.source, region.composite)
+        paused_until = self._backoff.blocked_until(backoff_key)
+        if paused_until is not None:
+            logger.info(
+                "Render %s paused after resource failures until %s",
+                region_name, paused_until.strftime("%H:%M"),
+            )
+            return
         # Checked before taking the lock: may fetch the schedule page.
         window = self._maintenance_window(config, config.sources.get(region.source))
 
@@ -980,9 +1155,16 @@ class RenderScheduler:
                         len(rendered.png) // 1024, len(buffer),
                     )
             self._status.record_success(region.name, len(buffer), next_run_at)
+            self._backoff.success(backoff_key)
         except RenderError as exc:
-            logger.error("Rendering for %s failed: %s", region_name, exc)
-            self._status.record_error(region.name, str(exc), next_run_at)
+            message = str(exc)
+            if is_resource_error(exc):
+                # Same product, same limit: retrying at the next scan would
+                # only repeat the memory/time abort (and the disk reads).
+                until = self._backoff.failure(backoff_key, message)
+                message = f"{message} - paused until {until:%H:%M} UTC"
+            logger.error("Rendering for %s failed: %s", region_name, message)
+            self._status.record_error(region.name, message, next_run_at)
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("Unexpected error while rendering %s", region_name)
             self._status.record_error(region.name, str(exc), next_run_at)
