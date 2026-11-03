@@ -17,6 +17,7 @@ Phases (each command can be repeated safely)::
     rollback    service stopped: copy data created at the target back to the
                 source (nothing deleted) and remove the marker
     check-compose FILE   validate a Compose file for the new location
+    preview-compose FILE check the switched Compose file without writing it
     apply-compose FILE   switch the service in a host Compose file to the new
                 location (backup ``FILE.before-nvme``, idempotent; needs PyYAML)
 
@@ -67,9 +68,10 @@ class MigrationError(Exception):
     pass
 
 
-def run(args: list[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
+def run(args: list[str], check: bool = True, capture: bool = True,
+        input: str | None = None) -> subprocess.CompletedProcess:
     """Runs a command (replaced in tests)."""
-    result = subprocess.run(args, text=True, capture_output=capture)
+    result = subprocess.run(args, text=True, capture_output=capture, input=input)
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip() if capture else ""
         raise MigrationError(f"{' '.join(args[:3])}... failed ({result.returncode}): {detail}")
@@ -406,7 +408,9 @@ def check_compose_config(config: dict, target: str, uuid: str, service: str | No
         volume = data[0]
         if os.path.abspath(volume.get("source", "")) != os.path.abspath(target):
             problems.append(f"/data comes from {volume.get('source')}, expected {target}")
-        if (volume.get("bind") or {}).get("create_host_path", True) is not False:
+        # `docker compose config` omits false values (Compose v2.38: "bind": {});
+        # short syntax is normalized to create_host_path: true.
+        if (volume.get("bind") or {}).get("create_host_path", False) is not False:
             problems.append("/data: bind.create_host_path must be false")
     if not any(_mount_target(v) == "/run/host-disk-by-uuid" for v in svc.get("volumes", [])):
         problems.append("/dev/disk/by-uuid is not mounted at /run/host-disk-by-uuid (identity check)")
@@ -424,6 +428,45 @@ def check_compose_config(config: dict, target: str, uuid: str, service: str | No
         if propagation in ("rslave", "slave", "rshared", "shared") and _mount_target(volume) == "/mnt":
             problems.append("/mnt with propagation %s exposes unmounted mount points" % propagation)
     return problems
+
+
+def check_compose_file(document: dict, service: str | None = None) -> list[str]:
+    """Problems of the Compose file as written: /data must say
+    ``create_host_path: false`` explicitly (the effective config cannot tell
+    a missing key from false)."""
+    services = (document or {}).get("services") or {}
+    if service is None:
+        candidates = [name for name, svc in services.items()
+                      if any(_mount_target(v) == "/data" for v in (svc or {}).get("volumes", []))]
+        service = candidates[0] if len(candidates) == 1 else None
+    svc = services.get(service) or {}
+    data = [v for v in svc.get("volumes", []) if _mount_target(v) == "/data"]
+    if data and isinstance(data[0], dict) and (data[0].get("bind") or {}).get("create_host_path") is False:
+        return []
+    return ["/data: the Compose file must set bind.create_host_path: false explicitly"]
+
+
+def compose_problems(document: dict, project_dir: str, target: str, uuid: str,
+                     service: str | None = None) -> list[str]:
+    """Raw file check plus the effective config from `docker compose config`
+    (fed via stdin, so a preview never writes the host file)."""
+    result = run(["docker", "compose", "--project-directory", project_dir, "-f", "-",
+                  "config", "--format", "json"], input=yaml_dump(document))
+    return (check_compose_file(document, service)
+            + check_compose_config(json.loads(result.stdout), target, uuid, service))
+
+
+def yaml_load(text: str):
+    try:
+        import yaml
+    except ImportError as exc:
+        raise MigrationError("PyYAML is required: sudo apt install python3-yaml") from exc
+    return yaml.safe_load(text)
+
+
+def yaml_dump(document) -> str:
+    import yaml
+    return yaml.safe_dump(document, sort_keys=False, default_flow_style=False)
 
 
 LOG_OPTIONS = {"max-size": "2m", "max-file": "2"}
@@ -564,7 +607,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--service", default=None,
                         help="Compose service (default: the one that mounts /data)")
     parser.add_argument("command", choices=["preflight", "copy", "finalize", "verify", "status",
-                                            "rollback", "check-compose", "apply-compose"])
+                                            "rollback", "check-compose", "apply-compose",
+                                            "preview-compose"])
     parser.add_argument("compose_file", nargs="?")
     args = parser.parse_args(argv)
     try:
@@ -574,12 +618,17 @@ def main(argv: list[str] | None = None) -> int:
             apply_compose(Path(args.compose_file), args.target, args.expect_uuid, args.service,
                           args.frames_uuid)
             return 0
-        if args.command == "check-compose":
+        if args.command in ("check-compose", "preview-compose"):
             if not args.compose_file:
-                raise MigrationError("check-compose needs the Compose file")
-            result = run(["docker", "compose", "-f", args.compose_file, "config", "--format", "json"])
-            problems = check_compose_config(json.loads(result.stdout), args.target, args.expect_uuid,
-                                            args.service)
+                raise MigrationError(f"{args.command} needs the Compose file")
+            path = Path(args.compose_file)
+            document = yaml_load(path.read_text())
+            if args.command == "preview-compose":
+                document, _ = compose_for_target(document, args.target, args.expect_uuid,
+                                                 args.service, args.frames_uuid)
+                log(f"Preview of {path} for {args.target} (file not changed):")
+            problems = compose_problems(document, str(path.parent), args.target, args.expect_uuid,
+                                        args.service)
             for problem in problems:
                 log(f"PROBLEM: {problem}")
             log("Compose ok" if not problems else f"{len(problems)} problem(s)")
