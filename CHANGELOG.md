@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.12.0] — 2026-11-10
+
+### Added
+
+- Hourly log monitor (`.github/workflows/log-monitor.yml`,
+  `scripts/log_monitor.py`): the self-hosted runner of every monitored host
+  fetches the container log via `GET /api/logs` on loopback; ERROR/CRITICAL
+  entries are redacted, grouped and matched against the new knowledge base
+  `PROBLEM-SOLUTIONS.md`. One issue per problem (`log-monitor`,
+  `known-problem` / `needs-analysis`) with the known solution or a GitHub
+  Models first analysis; unknown problems can be assigned to the Copilot
+  coding agent (`COPILOT_ASSIGN_TOKEN`), which extends the knowledge base.
+  Unreachable services are reported too. Settings: `LOG_MONITOR_TARGETS`,
+  `LOG_MONITOR_PORT`, `LOG_MONITOR_COPILOT`, `LOG_MONITOR_AI`.
+
 ## [1.11.2] — 2026-11-03
 
 ### Fixed

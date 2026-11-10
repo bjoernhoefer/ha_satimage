@@ -175,6 +175,46 @@ Manual updates remain available from the installation directory:
 docker compose pull && docker compose up -d
 ```
 
+### Hourly log monitor and problem knowledge base
+
+`.github/workflows/log-monitor.yml` checks the logs of the running
+containers every hour (cron `17 * * * *`, manually via *Actions → Log
+monitor → Run workflow*, optionally as dry run):
+
+1. On every monitored host the self-hosted runner (user `gh-deploy`, no
+   Docker access, no checkout, no actions) fetches
+   `http://127.0.0.1:<LOG_MONITOR_PORT>/api/logs?limit=0` (the last 1000
+   in-memory entries) and `/api/version`. A service that does not answer is
+   reported as an error itself.
+2. A GitHub-hosted job runs `scripts/log_monitor.py`: ERROR/CRITICAL entries
+   of the last 24 h are **redacted** (keys, tokens, IPs, e-mail addresses —
+   the repository is public), grouped by fingerprint and matched against
+   [PROBLEM-SOLUTIONS.md](PROBLEM-SOLUTIONS.md).
+3. Every group gets one issue labelled `log-monitor`:
+   - `known-problem`: the issue links the knowledge base entry and quotes
+     cause and solution, so the fix can be applied right away.
+   - `needs-analysis`: a short first analysis from GitHub Models is added and,
+     with `COPILOT_ASSIGN_TOKEN` set, the issue is assigned to the Copilot
+     coding agent. It analyses the error, fixes the code if possible and adds
+     a `PS-<n>` entry with a matching pattern to `PROBLEM-SOLUTIONS.md`.
+   Later occurrences only update the counters in the issue body (no
+   notification spam); a recurrence after closing reopens the issue with a
+   comment, while issues closed as *not planned* stay closed. At most 5 new
+   issues and 2 Copilot assignments per run; the rest follows next hour.
+
+| Setting (*Settings → Secrets and variables → Actions*) | Default | Meaning |
+|---|---|---|
+| Variable `LOG_MONITOR_TARGETS` | `DEPLOY_TARGETS`, else `pi` | `pi`, `azure`, `both`, `none` or a comma list |
+| Variable `LOG_MONITOR_PORT` | `6060` | Host port of the service (`HA_SATIMAGE_PORT`) |
+| Variable `LOG_MONITOR_COPILOT` | `unknown` | Assign to Copilot: `unknown` problems, `all`, `none` |
+| Variable `LOG_MONITOR_AI` | `true` | First analysis via GitHub Models (`false` = off) |
+| Secret `COPILOT_ASSIGN_TOKEN` | — | User token allowed to assign Copilot (fine-grained PAT: read/write actions, contents, issues, pull requests); without it no assignment |
+
+A monitored host whose runner is offline keeps its run queued (like a
+deployment), so only monitor hosts with an installed runner. Errors logged
+shortly before a container restart are lost, because the buffer lives in
+memory.
+
 ### Raspberry Pi resource protection and recovery
 
 The image limits OpenMP/BLAS numerical libraries to one thread and FFmpeg
@@ -399,7 +439,7 @@ for release tags; tag builds do not trigger deployment.
 
 ha_satimage uses [semantic versioning](https://semver.org/). The version is
 defined in `src/ha_satimage/__init__.py` (`__version__`) and in
-`pyproject.toml` (both must match; current: **1.11.2**). It is shown in the
+`pyproject.toml` (both must match; current: **1.12.0**). It is shown in the
 web UI footer and returned by `GET /api/version`.
 
 Releases are git tags `vX.Y.Z`; CI builds them into the image tags `X.Y.Z`,

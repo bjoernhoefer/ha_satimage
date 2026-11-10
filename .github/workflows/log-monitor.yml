@@ -1,0 +1,199 @@
+name: Log monitor
+
+# Hourly check of the running containers' logs for ERROR/CRITICAL entries.
+# Known problems (PROBLEM-SOLUTIONS.md) and new ones end up as issues
+# labelled "log-monitor"; new ones can be assigned to the Copilot coding
+# agent, which analyses them and extends the knowledge base.
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Targets to check (configured = LOG_MONITOR_TARGETS, else DEPLOY_TARGETS, else pi)"
+        type: choice
+        options: [configured, pi, azure, both]
+        default: configured
+      dry_run:
+        description: "Only report, do not create or update issues"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  targets:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      pi: ${{ steps.resolve.outputs.pi }}
+      azure: ${{ steps.resolve.outputs.azure }}
+    steps:
+      - name: Resolve monitored targets
+        id: resolve
+        env:
+          REQUESTED: ${{ inputs.targets }}
+          MONITOR_TARGETS: ${{ vars.LOG_MONITOR_TARGETS }}
+          DEPLOY_TARGETS: ${{ vars.DEPLOY_TARGETS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -f
+          requested="${REQUESTED:-configured}"
+          if [[ "$requested" == "configured" ]]; then
+            requested="${MONITOR_TARGETS:-${DEPLOY_TARGETS:-pi}}"
+          fi
+          requested="${requested,,}"
+          if [[ ! "$requested" =~ ^[a-z,[:space:]]+$ ]]; then
+            echo "::error::Invalid monitor targets (allowed: pi, azure, both, none; comma-separated)"
+            exit 1
+          fi
+          pi=false
+          azure=false
+          for target in ${requested//,/ }; do
+            case "$target" in
+              pi) pi=true ;;
+              azure) azure=true ;;
+              both) pi=true; azure=true ;;
+              none) ;;
+              *)
+                echo "::error::Unknown monitor target '$target' (allowed: pi, azure, both, none)"
+                exit 1
+                ;;
+            esac
+          done
+          {
+            echo "pi=$pi"
+            echo "azure=$azure"
+          } >> "$GITHUB_OUTPUT"
+          echo "Monitored targets: pi=$pi azure=$azure"
+
+  # Runs on the deployment host's runner (user gh-deploy, no Docker access):
+  # no checkout, no actions - only curl against the service on loopback.
+  collect-pi:
+    needs: targets
+    if: needs.targets.outputs.pi == 'true'
+    runs-on: [self-hosted, linux, ARM64, deploy-satellite]
+    permissions: {}
+    timeout-minutes: 5
+    outputs:
+      status: ${{ steps.fetch.outputs.status }}
+      detail: ${{ steps.fetch.outputs.detail }}
+      version: ${{ steps.fetch.outputs.version }}
+      logs: ${{ steps.fetch.outputs.logs }}
+    steps:
+      - name: Fetch container log
+        id: fetch
+        env:
+          PORT: ${{ vars.LOG_MONITOR_PORT }}
+        shell: bash
+        run: &fetch |
+          set -euo pipefail
+          port="${PORT:-6060}"
+          if [[ ! "$port" =~ ^[0-9]{1,5}$ ]] || (( port < 1 || port > 65535 )); then
+            echo "::error::Invalid LOG_MONITOR_PORT"
+            exit 1
+          fi
+          base="http://127.0.0.1:${port}"
+          tmp=$(mktemp)
+          trap 'rm -f "$tmp"' EXIT
+          if ! curl -fsS --max-time 30 -o "$tmp" "${base}/api/logs?limit=0" 2>"$tmp.err"; then
+            detail=$(tr -cd '[:print:]' < "$tmp.err" | head -c 300)
+            rm -f "$tmp.err"
+            echo "::warning::Service not reachable: $detail"
+            {
+              echo "status=unreachable"
+              echo "detail=$detail"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          rm -f "$tmp.err"
+          version=$(curl -fsS --max-time 10 "${base}/api/version" 2>/dev/null \
+            | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9A-Za-z.+-]*\)".*/\1/p' | head -c 40 || true)
+          # Job outputs travel via environment variables: stay well below
+          # the per-variable limit by fetching fewer entries if needed.
+          logs=$(gzip -9c "$tmp" | base64 -w0)
+          for limit in 300 100; do
+            (( ${#logs} <= 120000 )) && break
+            curl -fsS --max-time 30 -o "$tmp" "${base}/api/logs?limit=${limit}"
+            logs=$(gzip -9c "$tmp" | base64 -w0)
+          done
+          if (( ${#logs} > 120000 )); then
+            echo "::error::Log payload too large"
+            exit 1
+          fi
+          {
+            echo "status=ok"
+            echo "version=$version"
+            echo "logs=$logs"
+          } >> "$GITHUB_OUTPUT"
+          echo "Fetched log (${#logs} bytes encoded), version ${version:-unknown}"
+
+  collect-azure:
+    needs: targets
+    if: needs.targets.outputs.azure == 'true'
+    runs-on: [self-hosted, linux, X64, deploy-satellite-azure]
+    permissions: {}
+    timeout-minutes: 5
+    outputs:
+      status: ${{ steps.fetch.outputs.status }}
+      detail: ${{ steps.fetch.outputs.detail }}
+      version: ${{ steps.fetch.outputs.version }}
+      logs: ${{ steps.fetch.outputs.logs }}
+    steps:
+      - name: Fetch container log
+        id: fetch
+        env:
+          PORT: ${{ vars.LOG_MONITOR_PORT }}
+        shell: bash
+        run: *fetch
+
+  analyze:
+    needs: [targets, collect-pi, collect-azure]
+    if: always() && needs.targets.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      models: read
+    # Serialized so two runs never create the same issue twice.
+    concurrency:
+      group: log-monitor-analyze
+      cancel-in-progress: false
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/log_monitor.py
+            PROBLEM-SOLUTIONS.md
+          sparse-checkout-cone-mode: false
+
+      - name: Analyze errors and update issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          COPILOT_MODE: ${{ vars.LOG_MONITOR_COPILOT || 'unknown' }}
+          AI_ANALYSIS: ${{ vars.LOG_MONITOR_AI || 'true' }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+          LOG_MONITOR_BRANCH: ${{ github.event.repository.default_branch }}
+          LOG_MONITOR_PI_RESULT: ${{ needs.collect-pi.result }}
+          LOG_MONITOR_PI_STATUS: ${{ needs.collect-pi.outputs.status }}
+          LOG_MONITOR_PI_DETAIL: ${{ needs.collect-pi.outputs.detail }}
+          LOG_MONITOR_PI_VERSION: ${{ needs.collect-pi.outputs.version }}
+          LOG_MONITOR_PI_LOGS: ${{ needs.collect-pi.outputs.logs }}
+          LOG_MONITOR_AZURE_RESULT: ${{ needs.collect-azure.result }}
+          LOG_MONITOR_AZURE_STATUS: ${{ needs.collect-azure.outputs.status }}
+          LOG_MONITOR_AZURE_DETAIL: ${{ needs.collect-azure.outputs.detail }}
+          LOG_MONITOR_AZURE_VERSION: ${{ needs.collect-azure.outputs.version }}
+          LOG_MONITOR_AZURE_LOGS: ${{ needs.collect-azure.outputs.logs }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--targets pi,azure --copilot "$COPILOT_MODE")
+          [[ "$AI_ANALYSIS" == "true" ]] || args+=(--no-ai)
+          [[ "$DRY_RUN" == "true" ]] && args+=(--dry-run)
+          python3 scripts/log_monitor.py "${args[@]}"
