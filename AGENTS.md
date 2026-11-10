@@ -392,7 +392,7 @@ docker compose up -d
 
 - Semantic version in `src/ha_satimage/__init__.py` (`__version__`) and
   `pyproject.toml`; both must match (`tests/test_version.py`). Current:
-  **1.11.2**.
+  **1.12.0**.
 - Shown in the web UI footer and returned by `GET /api/version`.
 - Releases are git tags `vX.Y.Z`; CI builds them into the image tags
   `X.Y.Z`, `X.Y` and `latest`.
@@ -459,6 +459,22 @@ archive offers JPEG and PNG as well.
   `scripts/ha_storage_migrate.py` (incl. `apply-compose`), one-shot switch
   `scripts/ha_nzbpi_switch.sh` (tested with stubs in
   `tests/test_switch_script.py`), measurement `scripts/ha_measure.sh`.
+
+### Log monitor and knowledge base
+
+`.github/workflows/log-monitor.yml` runs hourly: per monitored host
+(`LOG_MONITOR_TARGETS`, else `DEPLOY_TARGETS`, else `pi`) the self-hosted
+runner only curls `127.0.0.1:<port>/api/logs?limit=0` (no checkout, no
+actions); `scripts/log_monitor.py` on a hosted runner redacts ERROR/CRITICAL
+entries, matches them against `PROBLEM-SOLUTIONS.md` and creates/updates one
+`log-monitor` issue per fingerprint (hidden marker = last reported timestamp
+per target). Unknown problems can be assigned to the Copilot coding agent
+(`COPILOT_ASSIGN_TOKEN`). **When fixing an error from the logs, add or update
+the `PS-<n>` entry in `PROBLEM-SOLUTIONS.md`** (format at the top of the file;
+the `Pattern` regex must match the message, `tests/test_log_monitor.py`
+checks all entries). New log messages for real failures should use
+ERROR/CRITICAL; expected/transient conditions stay at INFO/WARNING so they do
+not open issues.
 
 ## Operating rules
 
