@@ -195,6 +195,11 @@ def _crop_to(data, target):
     rows, cols = source_window(data.attrs["area"], target)
     cropped = data[..., rows, cols]
     cropped.attrs["area"] = data.attrs["area"][rows, cols]
+    # Ancillary variables (FCI pixel_quality) keep the uncropped full-disk
+    # area and Scene.resample resamples them too: at 500 m (HRFI) the
+    # nearest-neighbour KD-tree over 22272² pixels was OOM-killed. No
+    # composite uses them.
+    cropped.attrs["ancillary_variables"] = []
     area = cropped.attrs["area"]
     if isinstance(area, AreaDefinition):
         factor = coarsen_factor(area.width * area.height, target.width * target.height)

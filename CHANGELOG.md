@@ -3,6 +3,19 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.12.1] — 2026-11-12
+
+### Fixed
+
+- MTG FCI High Resolution (HRFI, `EO:EUM:DAT:0665`) archive images were never
+  created: every render was killed by the OOM killer or the memory budget
+  (peak > 2 GiB even for a 300 km region), so "Download all sources" left the
+  archive empty. Satpy also resamples a channel's ancillary `pixel_quality`
+  variable, which kept the uncropped full-disk area (22272² pixels at
+  500 m). Cropping now drops the ancillary variables (no composite uses
+  them). Measured on the Azure host: Mallorca 415 MiB / 8 s, European
+  overview 1.1 GiB / 22 s; FDHSI unchanged (~300–380 MiB).
+
 ## [1.12.0] — 2026-11-10
 
 ### Added

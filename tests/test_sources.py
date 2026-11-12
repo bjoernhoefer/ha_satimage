@@ -378,6 +378,28 @@ def test_crop_uses_own_window_per_resolution(rss_area):
     assert abs(hrv_crop.shape[1] - 3 * vis_crop.shape[1]) < 3 * 2 * 16
 
 
+def test_crop_drops_full_disk_ancillary_variables(rss_area):
+    """FCI pixel_quality stays full disk; Satpy would resample it (OOM at HRFI 500 m)."""
+    pytest.importorskip("satpy")
+    import xarray as xr
+    from satpy.dataset.anc_vars import dataset_walker
+
+    from ha_satimage.sources.satpy_render import RenderRequest, _crop_to, target_area
+
+    quality = xr.DataArray(np.zeros(rss_area.shape), dims=("y", "x"), attrs={"area": rss_area})
+    data = xr.DataArray(
+        np.zeros(rss_area.shape), dims=("y", "x"),
+        attrs={"area": rss_area, "ancillary_variables": [quality]},
+    )
+    target = target_area(RenderRequest("r", ("f",), "c", 39.7, 3.0, 300, 200, 200, "mallorca"))
+
+    cropped = _crop_to(data, target)
+
+    areas = [ds.attrs["area"] for ds, _ in dataset_walker([cropped])]
+    assert areas == [cropped.attrs["area"]]
+    assert data.attrs["ancillary_variables"][0] is quality
+
+
 def _band(values, name):
     import xarray as xr
 
