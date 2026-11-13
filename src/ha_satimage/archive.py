@@ -49,6 +49,8 @@ SLOT_FORMAT = "%Y%m%dT%H%M%SZ"
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SLOT_RE = re.compile(r"^\d{8}T\d{6}Z$")
 CLEAR_MARKER = ".cleared_before"
+# Share of render_max_storage_mb from which the archive counts as full.
+STORAGE_FULL_RATIO = 0.95
 
 
 def cleared_before(root: Path) -> datetime | None:
@@ -495,6 +497,19 @@ class RenderArchive:
         for image in images:
             image.path.unlink(missing_ok=True)
             image.jpeg_path.unlink(missing_ok=True)
+
+    def storage_floor(self, max_storage_mb: float) -> datetime | None:
+        """Oldest archived scan while the archive is at its storage limit.
+
+        Older captures would be pruned by size right after rendering, so
+        archive runs and the missing-image check skip them instead of
+        rendering them over and over. ``None`` while there is room.
+        """
+        if self.used_bytes() < max_storage_mb * 1024 * 1024 * STORAGE_FULL_RATIO:
+            return None
+        with self._lock:
+            images = self._all_images()
+        return min(i.created_at for i in images) if images else None
 
     def prune(self, retention_hours: int, max_storage_mb: float) -> int:
         """Remove images older than the retention time and beyond the limit."""

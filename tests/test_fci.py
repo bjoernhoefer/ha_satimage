@@ -731,6 +731,54 @@ def test_missing_archive_images_render_in_parallel_with_budget_shares(tmp_path, 
     assert scheduler.archive_missing()["missing"] == 0
 
 
+def test_full_render_archive_skips_scans_older_than_its_oldest_image(tmp_path, monkeypatch):
+    """At the storage limit, older scans would be pruned at once: no render churn."""
+    from ha_satimage.archive import RenderArchive, region_signature
+    from ha_satimage.config import ConfigStore
+    from ha_satimage.scheduler import RenderScheduler
+    from ha_satimage.sources import archive_composites
+    from ha_satimage.status import StatusStore
+
+    store = ConfigStore(tmp_path / "config.yaml")
+    store.update(_fci_config(tmp_path))
+    frames = tmp_path / "frames"
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    names = [(now - timedelta(minutes=m)).strftime("%Y%m%dT%H%M%SZ") for m in (0, 10, 20)]
+    for name in names:
+        write_fci_slot(frames, name)
+    renders = RenderArchive(frames / "_renders")
+    for region in store.get().regions:
+        renders.sync_region(region.name, region_signature(region))
+    renders.store("wien", "mtg_fci", DEFAULT_FCI_COMPOSITE,
+                  datetime.strptime(names[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc),
+                  _tiny_png())
+    calls = []
+    monkeypatch.setattr(
+        "ha_satimage.scheduler.render_fci_slot",
+        lambda slot, region, composite, collection=None: calls.append(slot.name)
+        or sources.RenderedFrame(_tiny_png(), slot.sensing_end),
+    )
+    scheduler = RenderScheduler(store, BufferManager(frames), StatusStore())
+    per_slot = len(store.get().regions) * len(
+        archive_composites(store.get().sources.get("mtg_fci"))
+    )
+
+    monkeypatch.setattr("ha_satimage.archive.STORAGE_FULL_RATIO", 0.0)
+    missing = scheduler.archive_missing()
+    fci = next(s for s in missing["sources"] if s["source"] == "mtg_fci")
+    assert missing["storage_full"] is True
+    assert (fci["captures"], fci["over_limit"], fci["missing"]) == (2, 1, 2 * per_slot - 1)
+    scheduler.archive_capture("mtg_fci", now)
+    assert names[2] not in calls and len(calls) == 2 * per_slot - 1
+
+    # Room again (e.g. limit raised): the older scan is rendered as well.
+    monkeypatch.setattr("ha_satimage.archive.STORAGE_FULL_RATIO", 1e9)
+    assert scheduler.archive_missing()["sources"][0]["missing"] == per_slot
+    calls.clear()
+    scheduler.archive_capture("mtg_fci", now)
+    assert set(calls) == {names[2]}
+
+
 def test_clear_cancels_selected_fci_task_before_it_can_render(tmp_path, monkeypatch):
     from ha_satimage.config import ConfigStore
     from ha_satimage.scheduler import RenderScheduler

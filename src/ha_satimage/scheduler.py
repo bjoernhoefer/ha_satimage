@@ -802,6 +802,7 @@ class RenderScheduler:
         cutoff = (
             datetime.now(timezone.utc) - timedelta(hours=retention) if retention > 0 else None
         )
+        floor = archive.storage_floor(config.archive.render_max_storage_mb)
         result = []
         for entry in config.sources.catalog:
             if not entry.enabled:
@@ -821,6 +822,9 @@ class RenderScheduler:
                         continue
                     if cutoff is not None and slot.sensing_end < cutoff:
                         break
+                    if floor is not None and slot.archive_time < floor:
+                        info["over_limit"] = info.get("over_limit", 0) + 1
+                        continue
                     chunks = set(slot.chunks)
                     regions = [
                         r for r in config.regions
@@ -852,6 +856,7 @@ class RenderScheduler:
             "missing": sum(item["missing"] for item in result),
             "workers": config.archive.render_workers,
             "render_retention_hours": retention,
+            "storage_full": floor is not None,
         }
 
     def _archive_running(self, source_id: str) -> bool:
@@ -1150,7 +1155,9 @@ class RenderScheduler:
             # (keeps the re-scan after every image cheap).
             handled: set[tuple[str, str, str]] = set()
 
-            def next_task():
+            over_limit: set[str] = set()
+
+            def next_task(floor):
                 cutoff = (
                     datetime.now(timezone.utc) - timedelta(hours=retention)
                     if retention > 0 else None
@@ -1160,6 +1167,10 @@ class RenderScheduler:
                         continue
                     if cutoff is not None and slot.sensing_end < cutoff:
                         break  # slots are sorted newest first
+                    if floor is not None and slot.archive_time < floor:
+                        # Would be pruned by the storage limit right away.
+                        over_limit.add(slot.name)
+                        continue
                     chunks = set(slot.chunks)
                     for region in config.regions:
                         if not needed[region.name] or not needed[region.name] <= chunks:
@@ -1186,7 +1197,8 @@ class RenderScheduler:
                     logger.warning("Archive %s stopped: storage problem", entry.id)
                     break
                 batch = []
-                while len(batch) < workers and (task := next_task()) is not None:
+                floor = archive.storage_floor(config.archive.render_max_storage_mb)
+                while len(batch) < workers and (task := next_task(floor)) is not None:
                     batch.append(task)
                 if not batch:
                     break
@@ -1219,6 +1231,12 @@ class RenderScheduler:
                     )
                 finally:
                     self._render_lock.release()
+            if over_limit:
+                logger.info(
+                    "Archive %s: %d older scan(s) skipped, rendered-archive storage limit"
+                    " (%d MB) reached", entry.id, len(over_limit),
+                    config.archive.render_max_storage_mb,
+                )
             return stored
         finally:
             guard.release()
