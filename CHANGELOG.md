@@ -3,6 +3,26 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.13.0] — 2026-11-13
+
+### Added
+
+- "Check missing images" and "Render missing images" in the archive
+  settings (`GET /api/archive/missing`, `POST /api/archive/backfill`):
+  shows per source how many archive images are missing for the downloaded
+  scans (FCI: all retained raw slots) and renders them now, retrying
+  combinations paused after earlier failures.
+- Setting "Parallel archive renders" (`archive.render_workers`, 1–8,
+  default 1): archive runs render several images at once, each render
+  process limited to its share of the memory budget; cut-outs that need
+  more are repeated alone with the full budget.
+
+### Changed
+
+- Region cards no longer show the image size in pixels, and the European
+  overview no longer has the "European overview" label – only the
+  coordinates (and radius) remain.
+
 ## [1.12.1] — 2026-11-12
 
 ### Fixed

@@ -718,3 +718,29 @@ def test_render_subprocess_retries_once_after_crash(monkeypatch):
     assert "memory limit" in satpy_render._describe_exit(-signal.SIGKILL)
     assert "SIGSEGV" in satpy_render._describe_exit(-signal.SIGSEGV)
     assert "exit code 1" in satpy_render._describe_exit(1)
+
+
+def test_parallel_archive_renders_use_their_budget_share_without_the_global_lock(monkeypatch):
+    """The archive coordinator holds HEAVY_WORK_LOCK for a whole parallel batch."""
+    import threading
+
+    from ha_satimage.resources import HEAVY_WORK_LOCK
+    from ha_satimage.sources import satpy_render
+
+    seen = []
+    monkeypatch.setattr(
+        satpy_render, "_run_once",
+        lambda request, timeout: seen.append(satpy_render._effective_budget()) or ("png", None),
+    )
+
+    def worker():
+        with satpy_render.parallel_render(123):
+            satpy_render.render_in_subprocess(object())
+
+    with HEAVY_WORK_LOCK:
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join(timeout=5)
+        assert not thread.is_alive(), "parallel render waited for the global lock"
+    assert seen == [123]
+    assert satpy_render._effective_budget() == satpy_render.memory_budget_bytes()

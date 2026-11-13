@@ -1227,6 +1227,7 @@ def test_archive_settings_are_saved(ui, live_server):
     assert _stored(live_server)["archive"] == {
         "retention_hours": 6, "chunk_min": 30, "chunk_max": 40,
         "render_all": True, "render_retention_hours": 8, "render_max_storage_mb": 500,
+        "render_workers": 1,
     }
     expect(ui.get_by_test_id("archive-summary")).to_contain_text("30–40")
     expect(ui.get_by_test_id("renders-summary")).to_contain_text("Active for")
@@ -1275,6 +1276,60 @@ def test_clear_archive_shows_server_error(ui):
     ui.get_by_test_id("archive-clear").click()
     expect(ui.get_by_test_id("archive-clear-message")).to_contain_text("Failed: Render still running")
     expect(ui.get_by_test_id("archive-clear")).to_be_enabled()
+
+
+@pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
+def test_render_missing_images_with_parallel_workers(request, page_fixture, live_server):
+    from ha_satimage.config import default_config
+    from ha_satimage.sources import archive_composites
+
+    page = request.getfixturevalue(page_fixture)
+    page.goto(live_server.url + "/")
+    page.get_by_test_id("sec-storage-fold").evaluate("(el) => { el.open = true; }")
+    page.get_by_test_id("archive-render-workers").fill("3")
+    page.get_by_test_id("save-storage").click()
+    expect(page.get_by_test_id("storage-message")).to_contain_text("Saved")
+    assert _stored(live_server)["archive"]["render_workers"] == 3
+
+    page.route("**/api/archive/missing", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps({
+            "missing": 12, "workers": 3, "render_retention_hours": 24, "sources": [
+                {"source": "mtg_fci_0665", "driver": "mtg_fci", "captures": 4, "expected": 20,
+                 "archived": 8, "missing": 12, "paused": 2, "running": True},
+                {"source": "dummy", "driver": "dummy", "captures": 0, "expected": 0,
+                 "archived": 0, "missing": 0, "paused": 0, "running": False, "placeholder": True},
+            ],
+        }),
+    ))
+    page.get_by_test_id("archive-missing-check").click()
+    summary = page.get_by_test_id("archive-missing-summary")
+    expect(summary).to_contain_text("12 image(s) missing")
+    expect(summary).to_contain_text("mtg_fci_0665: 8 of 20 archived in 4 scan(s), 12 missing")
+    expect(summary).to_contain_text("2 paused after failures")
+    expect(summary).not_to_contain_text("dummy")
+    page.unroute("**/api/archive/missing")
+
+    page.get_by_test_id("archive-backfill").click()
+    expect(page.get_by_test_id("archive-backfill-message")).to_contain_text(
+        "with 3 parallel render(s)"
+    )
+    expected_types = archive_composites(default_config().sources.get("dummy"))
+    renders = live_server.data_dir / "frames" / "_renders" / "wien" / "dummy"
+    for _ in range(60):
+        if all((renders / c).is_dir() and any((renders / c).glob("*.jpg")) for c in expected_types):
+            break
+        page.wait_for_timeout(500)
+    assert sorted(p.name for p in renders.iterdir() if p.is_dir()) == sorted(expected_types)
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+
+
+def test_render_missing_images_shows_server_error(ui):
+    ui.route("**/api/archive/backfill", lambda route: route.fulfill(
+        status=500, content_type="application/json", body='{"detail":"boom"}',
+    ))
+    ui.get_by_test_id("archive-backfill").click()
+    expect(ui.get_by_test_id("archive-backfill-message")).to_contain_text("Failed: boom")
+    expect(ui.get_by_test_id("archive-backfill")).to_be_enabled()
 
 
 def test_archive_all_now_renders_every_image_type(ui, live_server):
@@ -1326,7 +1381,8 @@ def test_europe_overview_layout_variants_and_viewer(request, page_fixture, live_
                 or second["y"] + second["height"] <= first["y"]
             )
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
-    expect(page.get_by_test_id("region-position-europe")).to_contain_text("European overview")
+    expect(page.get_by_test_id("region-position-europe")).to_have_text("-25.0, 33.0, 45.0, 72.0")
+    expect(page.get_by_test_id("region-position-wien")).not_to_contain_text("px")
     expect(page.get_by_test_id("region-borders-europe")).not_to_be_checked()
     for name in ("wien", "mallorca"):
         expect(page.get_by_test_id("region-borders-" + name)).to_be_checked()

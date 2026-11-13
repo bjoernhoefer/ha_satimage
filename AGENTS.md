@@ -193,6 +193,20 @@ slots missed earlier (run lagging behind, lock busy, restart, slots older
 than enabling "Download all sources") are backfilled; only one such run per
 source at a time, it re-reads the slot list after every image.
 
+**Missing images and parallel renders:** `scheduler.archive_missing()`
+(`GET /api/archive/missing`, UI "Check missing images") counts per enabled
+source the region × image type images missing for the available captures
+(FCI: retained raw slots within `render_retention_hours` whose chunks cover
+the region; other download sources: the newest scan; placeholders none).
+`POST /api/archive/backfill` (UI "Render missing images") lifts the backoff
+pauses of archived sources and queues `archive_all_now`.
+`archive.render_workers` (1–8, default 1, UI "Parallel archive renders")
+sets the batch size of archive runs: the coordinator holds the render lock
+for the whole batch, the renders run in threads with
+`satpy_render.parallel_render(budget / workers)` (no second lock, each
+child stopped at its share), and a render hitting its share is repeated
+alone with the full budget before it counts as a failure.
+
 The per-region button "🗄 Archive" opens the archive viewer with a source
 and an image type select, JPEG/PNG format selection and time-lapse. Only
 images from the list of available images are shown (raw FCI scans without
@@ -392,7 +406,7 @@ docker compose up -d
 
 - Semantic version in `src/ha_satimage/__init__.py` (`__version__`) and
   `pyproject.toml`; both must match (`tests/test_version.py`). Current:
-  **1.12.1**.
+  **1.13.0**.
 - Shown in the web UI footer and returned by `GET /api/version`.
 - Releases are git tags `vX.Y.Z`; CI builds them into the image tags
   `X.Y.Z`, `X.Y` and `latest`.
@@ -538,11 +552,13 @@ not open issues.
 | `POST /api/sources/sync` | Sync with the EUMETSAT Data Store now |
 | `POST /api/sources/adopt` | Adopt a discovered collection (`{"collection": ...}`) into the catalogue |
 | `GET /api/storage` | Current storage location, usage, candidates with free space/warnings |
-| `POST /api/storage` | Set storage location/history/archive (`frames_dir`, `move_existing`, `history_minutes`, `max_storage_mb`, `archive_retention_hours`, `archive_chunk_min`, `archive_chunk_max`, `archive_render_all`, `archive_render_retention_hours`, `archive_render_max_storage_mb`) |
+| `POST /api/storage` | Set storage location/history/archive (`frames_dir`, `move_existing`, `history_minutes`, `max_storage_mb`, `archive_retention_hours`, `archive_chunk_min`, `archive_chunk_max`, `archive_render_all`, `archive_render_retention_hours`, `archive_render_max_storage_mb`, `archive_render_workers`) |
 | `GET /api/archive` | Archive: FCI raw data (retention, chunks, slots/usage, last error) and pre-rendered images (`renders`, `render_all`, retention, limit) |
 | `GET /api/regions/{region}/archive` | Archive of a region: sources, image types, images (`?source=&composite=`; `slots` = alias of `images`) |
 | `GET /regions/{region}/archive/{source}/{composite}/{slot}.{png\|jpg}` | Archived image from the list of available images (never rendered on request; 404 otherwise) |
 | `POST /api/archive/render` | Archive all enabled sources now (all regions, all image types) |
+| `GET /api/archive/missing` | Archive images missing for the downloaded captures per source (`expected`, `archived`, `missing`, `paused`, `running`), `workers` |
+| `POST /api/archive/backfill` | Render all missing archive images now (lifts pauses, uses `archive.render_workers`) |
 | `POST /api/archive/clear` | Delete archived images and FCI raw slots, retain normal history; persist a cutoff so only newer scans are downloaded/archived |
 | `GET /api/logs` | Log entries (`?after=<id>`, `?format=text`) |
 | `GET /api/diagnostics` | Render runs/failures by cause, parallelism, peak RSS, memory budget, queues, backoff, storage state, download errors |
@@ -592,7 +608,8 @@ move, no horizontal scrolling on phones, change image type/source per
 region (re-renders without another click), toggle country borders per
 region (desktop + phone), archive viewer (source and image type select,
 paging, format switch, deep link `#archive=…&s=…&c=…&f=…`, desktop +
-phone), archive settings and "Archive all now", locations on the map of Europe (add by clicking on the zoomed map, enter lat/lon, change incl. history reset, remove/cancel, limit of 4, zoom/pan, satellite background error, deep link, desktop + phone), show cycle per source and change it via JSON
+phone), archive settings and "Archive all now", missing images check + "Render missing
+images" with parallel renders (desktop + phone), locations on the map of Europe (add by clicking on the zoomed map, enter lat/lon, change incl. history reset, remove/cancel, limit of 4, zoom/pan, satellite background error, deep link, desktop + phone), show cycle per source and change it via JSON
 (desktop + phone), placeholder sources marked, API links follow the
 selected region and are clickable, version shown in the footer.
 Selectors use `data-testid` exclusively — markup and styling may change

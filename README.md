@@ -439,7 +439,7 @@ for release tags; tag builds do not trigger deployment.
 
 ha_satimage uses [semantic versioning](https://semver.org/). The version is
 defined in `src/ha_satimage/__init__.py` (`__version__`) and in
-`pyproject.toml` (both must match; current: **1.12.1**). It is shown in the
+`pyproject.toml` (both must match; current: **1.13.0**). It is shown in the
 web UI footer and returned by `GET /api/version`.
 
 Releases are git tags `vX.Y.Z`; CI builds them into the image tags `X.Y.Z`,
@@ -482,6 +482,15 @@ Releases are git tags `vX.Y.Z`; CI builds them into the image tags `X.Y.Z`,
   sources" every region is rendered in every image type right after each
   download; the "🗄 Archive" viewer shows only these ready-made images
   (nothing is rendered while browsing).
+- **Missing archive images**: "Check missing images" counts, per source,
+  the images still missing for the downloaded scans (FCI: every retained raw
+  slot within the archive retention; other sources: the newest scan).
+  "Render missing images" renders them now and retries combinations paused
+  after earlier failures. "Parallel archive renders" (1–8, default 1) sets
+  how many archive images render at once; each one gets its share of the
+  render memory budget and cut-outs that need more are repeated alone. Only
+  raise it when the container has enough memory and CPU cores. API:
+  `GET /api/archive/missing`, `POST /api/archive/backfill`.
 - **Clear archive** (under "Storage location & history"): after confirmation,
   deletes all archived PNG/JPEG images and FCI raw slots, but keeps the normal
   region history, configuration and credentials. It waits for the current
