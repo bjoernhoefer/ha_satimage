@@ -564,12 +564,15 @@ def test_storage_api_sets_archive_settings_and_prunes(live_server):
     assert stored == {
         "retention_hours": 1, "chunk_min": 30, "chunk_max": 40,
         "render_all": False, "render_retention_hours": 24, "render_max_storage_mb": 2000,
+        "render_workers": 1,
     }
     remaining = sorted(p.name for p in (frames_dir / "_archive" / "EO_EUM_DAT_0662").iterdir())
     assert remaining == ["20260926T142000Z"]
 
     bad = httpx.post(f"{live_server.url}/api/storage", json={"archive_chunk_min": 40, "archive_chunk_max": 30})
     assert bad.status_code == 400
+    too_many = httpx.post(f"{live_server.url}/api/storage", json={"archive_render_workers": 9})
+    assert too_many.status_code == 400
 
     # Settings of the rendered-image archive, including retention pruning.
     from ha_satimage.archive import RenderArchive
@@ -579,10 +582,11 @@ def test_storage_api_sets_archive_settings_and_prunes(live_server):
     renders.store("wien", "dummy", "cloudtop", datetime.now(timezone.utc), _tiny_png())
     response = httpx.post(f"{live_server.url}/api/storage", json={
         "archive_render_all": True, "archive_render_retention_hours": 6,
-        "archive_render_max_storage_mb": 500,
+        "archive_render_max_storage_mb": 500, "archive_render_workers": 3,
     })
     assert response.status_code == 200, response.text
     stored = yaml.safe_load(live_server.config_file.read_text())["archive"]
+    assert stored["render_workers"] == 3
     assert stored["render_all"] is True
     assert stored["render_retention_hours"] == 6
     assert stored["render_max_storage_mb"] == 500
@@ -661,6 +665,70 @@ def test_archive_run_prerenders_every_archived_fci_slot(tmp_path, monkeypatch, m
     restarted = RenderScheduler(store, BufferManager(frames), StatusStore())
     assert restarted.archive_capture("mtg_fci", now) == 0
     assert {c[2] for c in calls} == {"cloudtop"} and len(calls) == len(regions)
+
+
+def test_missing_archive_images_render_in_parallel_with_budget_shares(tmp_path, monkeypatch):
+    """"Render missing images": counts gaps, renders N at once, large cut-outs alone."""
+    import threading
+    import time
+
+    from ha_satimage.config import ConfigStore
+    from ha_satimage.scheduler import RenderScheduler
+    from ha_satimage.sources import archive_composites, satpy_render
+    from ha_satimage.sources.satpy_render import RenderResourceError
+    from ha_satimage.status import StatusStore
+
+    monkeypatch.setenv("HA_SATIMAGE_RENDER_MEMORY_MB", "900")
+    store = ConfigStore(tmp_path / "config.yaml")
+    config = _fci_config(tmp_path)
+    config.archive.render_workers = 3
+    store.update(config)
+    frames = tmp_path / "frames"
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    for minutes in (0, 10):
+        write_fci_slot(frames, (now - timedelta(minutes=minutes)).strftime("%Y%m%dT%H%M%SZ"))
+    scheduler = RenderScheduler(store, BufferManager(frames), StatusStore())
+    composites = archive_composites(store.get().sources.get("mtg_fci"))
+    regions = [r.name for r in store.get().regions]
+    expected = 2 * len(regions) * len(composites)
+    missing = scheduler.archive_missing()
+    fci = next(s for s in missing["sources"] if s["source"] == "mtg_fci")
+    assert (fci["captures"], fci["expected"], fci["missing"]) == (2, expected, expected)
+    assert missing["workers"] == 3
+
+    # Paused after an earlier failure: the manual backfill retries it.
+    scheduler._backoff.failure((regions[0], "mtg_fci", composites[0]), "old OOM")
+    assert scheduler.archive_missing()["sources"][0]["paused"] == 2
+    monkeypatch.setattr(scheduler, "archive_all_now", lambda: 1)
+    assert scheduler.backfill_archive()["pauses_lifted"] == 1
+    assert not scheduler._backoff.blocked_until((regions[0], "mtg_fci", composites[0]))
+
+    lock = threading.Lock()
+    active = {"now": 0, "max": 0}
+    budgets = []
+    big = (regions[0], composites[0])
+
+    def fake_render(slot, region, composite, collection=None):
+        budget = satpy_render._effective_budget()
+        with lock:
+            budgets.append(budget)
+            active["now"] += 1
+            active["max"] = max(active["max"], active["now"])
+        try:
+            time.sleep(0.05)
+            if (region.name, composite) == big and budget < 900 * 2**20:
+                raise RenderError("too big") from RenderResourceError("memory budget")
+            return sources.RenderedFrame(_tiny_png(), slot.sensing_end)
+        finally:
+            with lock:
+                active["now"] -= 1
+
+    monkeypatch.setattr("ha_satimage.scheduler.render_fci_slot", fake_render)
+    assert scheduler.archive_capture("mtg_fci", now) == expected
+    assert active["max"] == 3
+    assert 300 * 2**20 in budgets and 900 * 2**20 in budgets  # share, then alone
+    assert scheduler._backoff.snapshot() == []
+    assert scheduler.archive_missing()["missing"] == 0
 
 
 def test_clear_cancels_selected_fci_task_before_it_can_render(tmp_path, monkeypatch):

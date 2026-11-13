@@ -39,8 +39,10 @@ renders while the data filesystem is missing, wrong or full.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import logging
+from concurrent import futures
 import threading
 import time
 from collections import deque
@@ -71,6 +73,7 @@ from ha_satimage.maintenance import (
 from ha_satimage.sources import (
     SOURCE_REGISTRY,
     NoNewData,
+    RenderedFrame,
     RenderError,
     archive_composites,
     get_source,
@@ -782,6 +785,99 @@ class RenderScheduler:
         logger.info("Archive run requested for %s", ", ".join(sources) or "no source")
         return len(sources)
 
+    def archive_missing(self) -> dict:
+        """Count archive images still missing for the available captures.
+
+        MTG FCI: every retained raw slot (within the archive retention) x
+        region x image type; other download sources: the newest downloaded
+        capture. Placeholder sources have no captures of their own.
+        """
+        from ha_satimage.config import DEFAULT_FCI_COLLECTION
+        from ha_satimage.sources.fci_archive import chunks_for_region, get_archive
+
+        config = self._config_store.get()
+        archive = get_render_archive(render_archive_root(config))
+        cleared = archive.cleared_before
+        retention = config.archive.render_retention_hours
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=retention) if retention > 0 else None
+        )
+        result = []
+        for entry in config.sources.catalog:
+            if not entry.enabled:
+                continue
+            composites = archive_composites(entry)
+            info = {
+                "source": entry.id, "driver": entry.driver, "captures": 0,
+                "expected": 0, "archived": 0, "missing": 0, "paused": 0,
+                "running": self._archive_running(entry.id),
+            }
+            captures: list[tuple[datetime, list]] = []
+            if entry.driver == "mtg_fci":
+                raw = get_archive(archive_root(config))
+                needed = {r.name: chunks_for_region(r) for r in config.regions}
+                for slot in raw.slots(entry.collection or DEFAULT_FCI_COLLECTION):
+                    if cleared is not None and slot.sensing_end <= cleared:
+                        continue
+                    if cutoff is not None and slot.sensing_end < cutoff:
+                        break
+                    chunks = set(slot.chunks)
+                    regions = [
+                        r for r in config.regions
+                        if needed[r.name] and needed[r.name] <= chunks
+                    ]
+                    captures.append((slot.archive_time, regions))
+            elif self._downloads_for(entry.driver):
+                state = self._downloads.get(entry.id)
+                sensing = state.last_sensing if state else None
+                if sensing is not None and (cleared is None or sensing > cleared):
+                    captures.append((sensing, list(config.regions)))
+            else:
+                info["placeholder"] = True
+            info["captures"] = len(captures)
+            for sensing, regions in captures:
+                for region in regions:
+                    for composite in composites:
+                        info["expected"] += 1
+                        if archive.has(region.name, entry.id, composite, sensing):
+                            info["archived"] += 1
+                        elif self._backoff.blocked_until((region.name, entry.id, composite)):
+                            info["paused"] += 1
+                            info["missing"] += 1
+                        else:
+                            info["missing"] += 1
+            result.append(info)
+        return {
+            "sources": result,
+            "missing": sum(item["missing"] for item in result),
+            "workers": config.archive.render_workers,
+            "render_retention_hours": retention,
+        }
+
+    def _archive_running(self, source_id: str) -> bool:
+        guard = self._archive_locks.get(source_id)
+        with self._download_lock:
+            queued = source_id in self._archive_queued
+        return queued or (guard is not None and guard.locked())
+
+    def backfill_archive(self) -> dict:
+        """Render every missing archive image now (UI "Render missing images").
+
+        Pauses of archive combinations after earlier failures are lifted
+        (a user-requested retry); the runs use ``archive.render_workers``.
+        """
+        config = self._config_store.get()
+        archived = set(self.archive_sources(config))
+        lifted = self._backoff.clear_matching(lambda key: key[1] in archived)
+        missing = self.archive_missing()
+        logger.info(
+            "Render missing archive images requested: %d missing, %d worker(s)%s",
+            missing["missing"], config.archive.render_workers,
+            f", {lifted} paused combination(s) retried" if lifted else "",
+        )
+        sources = self.archive_all_now()
+        return {**missing, "sources_scheduled": sources, "pauses_lifted": lifted}
+
     def refresh_archived_regions(self, region_names: set[str]) -> None:
         """Update archived images after a region's cut-out or borders changed."""
         self._scheduler.add_job(
@@ -890,6 +986,86 @@ class RenderScheduler:
             )
         return stored
 
+    def _render_batch(self, jobs: list[Callable[[], RenderedFrame]]) -> list:
+        """Run archive renders while the caller holds the render lock.
+
+        One job runs directly; several run in parallel threads (one render
+        child process each), every child limited to its share of the memory
+        budget. A job that hits its share (large cut-out) is repeated alone
+        with the full budget. Returns a frame or the exception per job.
+        """
+        from ha_satimage.sources.satpy_render import memory_budget_bytes, parallel_render
+
+        def call(job):
+            try:
+                return job()
+            except Exception as exc:  # reported per job by the caller
+                return exc
+
+        if len(jobs) <= 1:
+            return [call(job) for job in jobs]
+        total = memory_budget_bytes()
+        share = total // len(jobs) if total else None
+
+        def run(job):
+            with parallel_render(share):
+                return call(job)
+
+        with futures.ThreadPoolExecutor(len(jobs), thread_name_prefix="archive-render") as pool:
+            results = list(pool.map(run, jobs))
+        for index, result in enumerate(results):
+            if isinstance(result, BaseException) and is_resource_error(result):
+                logger.info(
+                    "Archive: parallel render stopped at its memory share (%s) - "
+                    "repeating it alone with the full budget",
+                    f"{share / 2**20:.0f} MiB" if share else "none",
+                )
+                results[index] = call(jobs[index])
+        return results
+
+    def _store_archive_results(
+        self, archive, entry, batch, results, started, cutoff=None
+    ) -> int:
+        """Store rendered archive images, log and pause failures."""
+        stored = 0
+        seconds = time.monotonic() - started
+        for (region, composite, slot_label, archive_time), result in zip(batch, results):
+            key = (region.name, entry.id, composite)
+            suffix = f" {slot_label}" if slot_label else ""
+            if isinstance(result, NoNewData):
+                continue
+            if isinstance(result, (RenderError, FileNotFoundError)):
+                # A memory/time abort would repeat for every capture:
+                # pause the combination instead of an OOM storm.
+                logger.error(
+                    "Archive %s / %s / %s%s failed: %s%s",
+                    region.name, entry.id, composite, suffix, result,
+                    self._pause_note(key, result),
+                )
+                continue
+            if isinstance(result, BaseException):
+                logger.error(
+                    "Archive %s / %s / %s%s: unexpected error",
+                    region.name, entry.id, composite, suffix, exc_info=result,
+                )
+                continue
+            if cutoff is not None and result.sensing_time <= cutoff:
+                continue
+            image = archive.store(
+                region.name, entry.id, composite, archive_time or result.sensing_time, result.png
+            )
+            if image is None:
+                continue
+            self._backoff.success(key)
+            stored += 1
+            logger.info(
+                "Archived %s / %s / %s %s in %.1f s (%d KB)%s",
+                region.name, entry.id, composite, image.slot, seconds,
+                len(result.png) // 1024,
+                f", {len(batch)} in parallel" if len(batch) > 1 else "",
+            )
+        return stored
+
     def _archive_newest(self, entry, config, archive, composites, sensing) -> int:
         """Render the newest capture of a source in every region and image type."""
         cutoff = archive.cleared_before
@@ -897,60 +1073,48 @@ class RenderScheduler:
             logger.info("Archive %s: cleared scan skipped", entry.id)
             return 0
         source_id = entry.id
+        with self.exclusive(timeout=LOCK_TIMEOUT_SECONDS):
+            if self._config_store.get() is not config or archive.cleared_before != cutoff:
+                return 0
+            for region in config.regions:
+                archive.sync_region(region.name, region_signature(region))
+        pending = [
+            (region, composite)
+            for region in config.regions
+            for composite in composites
+            if not archive.has(region.name, source_id, composite, sensing)
+        ]
+        workers = config.archive.render_workers
         stored = 0
-        for region in config.regions:
-            with self.exclusive(timeout=LOCK_TIMEOUT_SECONDS):
+        while pending:
+            if self._storage_problem is not None:
+                logger.warning("Archive %s stopped: storage problem", source_id)
+                return stored
+            batch = []
+            while pending and len(batch) < workers:
+                region, composite = pending.pop(0)
+                if not self._backoff.blocked_until((region.name, source_id, composite)):
+                    batch.append((region, composite, None, None))
+            if not batch:
+                continue
+            if not self._acquire_for_archive(LOCK_TIMEOUT_SECONDS):
+                logger.warning("Archive %s: render lock busy, skipping", source_id)
+                return stored
+            started = time.monotonic()
+            try:
                 if self._config_store.get() is not config or archive.cleared_before != cutoff:
                     return stored
-                archive.sync_region(region.name, region_signature(region))
-            for composite in composites:
-                if archive.has(region.name, source_id, composite, sensing):
-                    continue
-                if self._storage_problem is not None:
-                    logger.warning("Archive %s stopped: storage problem", source_id)
+                results = self._render_batch([
+                    functools.partial(render_with, entry, region, composite, config)
+                    for region, composite, _, _ in batch
+                ])
+                if self._config_store.get() is not config:
                     return stored
-                key = (region.name, source_id, composite)
-                if self._backoff.blocked_until(key):
-                    continue
-                if not self._acquire_for_archive(LOCK_TIMEOUT_SECONDS):
-                    logger.warning("Archive %s: render lock busy, skipping", source_id)
-                    return stored
-                started = time.monotonic()
-                try:
-                    if self._config_store.get() is not config or archive.cleared_before != cutoff:
-                        return stored
-                    rendered = render_with(entry, region, composite, config)
-                    if self._config_store.get() is not config:
-                        return stored
-                    if cutoff is not None and rendered.sensing_time <= cutoff:
-                        continue
-                    image = archive.store(
-                        region.name, source_id, composite, rendered.sensing_time, rendered.png
-                    )
-                except NoNewData:
-                    continue
-                except RenderError as exc:
-                    logger.error(
-                        "Archive %s / %s / %s failed: %s%s",
-                        region.name, source_id, composite, exc, self._pause_note(key, exc),
-                    )
-                    continue
-                except Exception:  # pragma: no cover - defensive
-                    logger.exception(
-                        "Archive %s / %s / %s: unexpected error",
-                        region.name, source_id, composite,
-                    )
-                    continue
-                finally:
-                    self._render_lock.release()
-                if image is not None:
-                    self._backoff.success(key)
-                    stored += 1
-                    logger.info(
-                        "Archived %s / %s / %s %s in %.1f s (%d KB)",
-                        region.name, source_id, composite, image.slot,
-                        time.monotonic() - started, len(rendered.png) // 1024,
-                    )
+                stored += self._store_archive_results(
+                    archive, entry, batch, results, started, cutoff
+                )
+            finally:
+                self._render_lock.release()
         return stored
 
     def _archive_fci_slots(self, entry, config, archive, composites) -> int:
@@ -1011,17 +1175,21 @@ class RenderScheduler:
                                 return slot, region, composite
                 return None
 
+            workers = config.archive.render_workers
             stored = 0
-            while (task := next_task()) is not None:
+            while True:
                 if self._config_store.get() is not config:
                     # Regions/sources changed: the next archive run continues.
                     logger.info("Archive %s: configuration changed, stopping this run", entry.id)
                     break
-                slot, region, composite = task
                 if self._storage_problem is not None:
                     logger.warning("Archive %s stopped: storage problem", entry.id)
                     break
-                key = (region.name, entry.id, composite)
+                batch = []
+                while len(batch) < workers and (task := next_task()) is not None:
+                    batch.append(task)
+                if not batch:
+                    break
                 if not self._acquire_for_archive(LOCK_TIMEOUT_SECONDS):
                     logger.warning("Archive %s: render lock busy, skipping", entry.id)
                     break
@@ -1029,39 +1197,28 @@ class RenderScheduler:
                 try:
                     if self._config_store.get() is not config or archive.cleared_before != cleared:
                         break
-                    if archive.has(region.name, entry.id, composite, slot.archive_time):
-                        continue  # rendered on request meanwhile; finally releases the lock
-                    rendered = render_fci_slot(slot, region, composite, collection)
+                    # Rendered meanwhile (e.g. another run): skip.
+                    batch = [
+                        (slot, region, composite) for slot, region, composite in batch
+                        if not archive.has(region.name, entry.id, composite, slot.archive_time)
+                    ]
+                    results = self._render_batch([
+                        functools.partial(render_fci_slot, slot, region, composite, collection)
+                        for slot, region, composite in batch
+                    ])
                     if self._config_store.get() is not config:
                         break
                     # Named after the raw slot, so the viewer finds it as pre-rendered.
-                    image = archive.store(region.name, entry.id, composite, slot.archive_time, rendered.png)
-                except (RenderError, FileNotFoundError) as exc:
-                    # A memory/time abort would repeat for every retained slot
-                    # (~144 per day): pause the combination instead of an OOM storm.
-                    logger.error(
-                        "Archive %s / %s / %s %s failed: %s%s",
-                        region.name, entry.id, composite, slot.name, exc,
-                        self._pause_note(key, exc),
+                    stored += self._store_archive_results(
+                        archive, entry,
+                        [
+                            (region, composite, slot.name, slot.archive_time)
+                            for slot, region, composite in batch
+                        ],
+                        results, started,
                     )
-                    continue
-                except Exception:  # pragma: no cover - defensive
-                    logger.exception(
-                        "Archive %s / %s / %s %s: unexpected error",
-                        region.name, entry.id, composite, slot.name,
-                    )
-                    continue
                 finally:
                     self._render_lock.release()
-                if image is None:
-                    continue
-                self._backoff.success(key)
-                stored += 1
-                logger.info(
-                    "Archived %s / %s / %s %s in %.1f s (%d KB)",
-                    region.name, entry.id, composite, image.slot,
-                    time.monotonic() - started, len(rendered.png) // 1024,
-                )
             return stored
         finally:
             guard.release()

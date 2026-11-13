@@ -7,6 +7,7 @@ run, and an OOM kill should hit the rendering, not the web server.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import multiprocessing
@@ -195,6 +196,11 @@ def _crop_to(data, target):
     rows, cols = source_window(data.attrs["area"], target)
     cropped = data[..., rows, cols]
     cropped.attrs["area"] = data.attrs["area"][rows, cols]
+    # Ancillary variables (FCI pixel_quality) keep the uncropped full-disk
+    # area and Scene.resample resamples them too: at 500 m (HRFI) the
+    # nearest-neighbour KD-tree over 22272² pixels was OOM-killed. No
+    # composite uses them.
+    cropped.attrs["ancillary_variables"] = []
     area = cropped.attrs["area"]
     if isinstance(area, AreaDefinition):
         factor = coarsen_factor(area.width * area.height, target.width * target.height)
@@ -474,8 +480,35 @@ def _complete_png(png) -> bool:
     )
 
 
+_parallel = threading.local()
+
+
+@contextlib.contextmanager
+def parallel_render(budget: int | None):
+    """Mark the current thread as one of several parallel archive workers.
+
+    The caller (the archive coordinator) already holds ``HEAVY_WORK_LOCK``
+    for the whole batch, so the child render does not take it again and is
+    stopped at ``budget`` (its share of the memory budget) instead of the
+    full budget.
+    """
+    _parallel.budget = budget
+    _parallel.active = True
+    try:
+        yield
+    finally:
+        _parallel.active = False
+        _parallel.budget = None
+
+
+def _effective_budget() -> int | None:
+    if getattr(_parallel, "active", False):
+        return _parallel.budget
+    return memory_budget_bytes()
+
+
 def _run_once(request: RenderRequest, timeout: float):
-    budget = memory_budget_bytes()
+    budget = _effective_budget()
     oom_before = cgroup_oom_kills()
     context = _context()
     parent, child = context.Pipe(duplex=False)
@@ -565,7 +598,8 @@ def render_in_subprocess(
     memory budget are reported at once - repeating would hit the same
     limit again and only double the disk and memory load.
     """
-    with HEAVY_WORK_LOCK:
+    lock = contextlib.nullcontext() if getattr(_parallel, "active", False) else HEAVY_WORK_LOCK
+    with lock:
         for attempt in range(retries + 1):
             try:
                 return _run_once(request, timeout)
@@ -583,6 +617,7 @@ __all__ = [
     "STATS",
     "coarsen_factor",
     "memory_budget_bytes",
+    "parallel_render",
     "protection_summary",
     "render_in_subprocess",
     "render_png",

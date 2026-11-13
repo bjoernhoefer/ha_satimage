@@ -337,7 +337,7 @@ async def post_storage(payload: dict):
         if payload.get(key) is not None:
             data["history"][key] = payload[key]
     for key in ("retention_hours", "chunk_min", "chunk_max", "render_all",
-                "render_retention_hours", "render_max_storage_mb"):
+                "render_retention_hours", "render_max_storage_mb", "render_workers"):
         if payload.get(f"archive_{key}") is not None:
             data["archive"][key] = payload[f"archive_{key}"]
     try:
@@ -392,6 +392,7 @@ def _archive_summary(config: AppConfig) -> dict:
         "render_all": config.archive.render_all,
         "render_retention_hours": config.archive.render_retention_hours,
         "render_max_storage_mb": config.archive.render_max_storage_mb,
+        "render_workers": config.archive.render_workers,
         "archived_sources": [e.id for e in config.sources.catalog if e.enabled],
         "renders": _render_archive(config).summary(),
     }
@@ -536,6 +537,19 @@ async def archive_render_now():
     """Archive the newest capture of every enabled source, in all image types."""
     count = await run_in_threadpool(scheduler.archive_all_now)
     return {"status": "scheduled", "sources": count}
+
+
+@app.get("/api/archive/missing")
+async def archive_missing():
+    """Archive images still missing for the downloaded captures, per source."""
+    return await run_in_threadpool(scheduler.archive_missing)
+
+
+@app.post("/api/archive/backfill")
+async def archive_backfill():
+    """Render every missing archive image now (with ``archive.render_workers``)."""
+    result = await run_in_threadpool(scheduler.backfill_archive)
+    return {"status": "scheduled", **result}
 
 
 @app.post("/api/archive/clear")

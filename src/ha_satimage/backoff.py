@@ -15,6 +15,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 BASE_DELAY = timedelta(minutes=15)
 MAX_DELAY = timedelta(hours=6)
@@ -85,6 +86,14 @@ class FailureBackoff:
             self._entries.clear()
         if count:
             logger.info("Configuration changed - %d paused combination(s) are retried", count)
+
+    def clear_matching(self, predicate: Callable[[tuple], bool]) -> int:
+        """Lift the pauses of all keys matching ``predicate``; returns their number."""
+        with self._lock:
+            keys = [key for key in self._entries if predicate(key)]
+            for key in keys:
+                del self._entries[key]
+        return len(keys)
 
     def snapshot(self, now: datetime | None = None) -> list[dict]:
         now = now or datetime.now(timezone.utc)

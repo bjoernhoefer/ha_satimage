@@ -206,6 +206,8 @@ def test_knowledge_base_entries_are_valid(kb):
         ("Rendering for vienna failed: Render process exceeded the memory budget of 576 MiB "
          "(RSS 600 MiB) and was stopped - paused until 20:30 UTC", "PS-004"),
         ("Render process killed by the kernel OOM killer (container memory limit); peak RSS 700 MiB", "PS-004"),
+        ("Archive mallorca / mtg_fci_0665 / ir_sandwich 20261112T201923Z failed: Render process killed "
+         "by the kernel OOM killer (container memory limit); peak RSS 1264 MiB - paused until 20:53 UTC", "PS-009"),
         ("Rendering exceeded the time limit of 300s", "PS-005"),
         ("Storage problem - downloads and renders paused: free space 100 MB", "PS-006"),
         ("Rendering for x failed: Composite 'airmass' could not be generated", "PS-007"),

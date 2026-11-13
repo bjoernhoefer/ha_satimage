@@ -69,6 +69,20 @@ title) so old issues keep their links.
   Planned RSS outages are handled by the maintenance schedule (no error).
 - **Fixed in:** —
 
+## PS-009: FCI archive render killed (memory, full-disk ancillary data)
+
+- **Pattern:** `Archive \S+ / mtg_fci\S* / \S+ \S+ failed: Render process (exceeded the memory budget|killed by the kernel OOM killer)`
+- **Symptom:** `Archive <region> / mtg_fci_0665 / <composite> <slot> failed:
+  Render process killed by the kernel OOM killer …` (or `exceeded the memory
+  budget`) for every slot and image type, even small regions; no FCI HRFI
+  images ever appear in the archive viewer.
+- **Cause:** Satpy's `Scene.resample` also resampled each channel's
+  ancillary `pixel_quality`, which kept the uncropped full-disk area; at HRFI
+  500 m (22272² pixels) the nearest-neighbour KD-tree needs several GiB.
+- **Solution:** update to 1.12.1 or later (cropping drops ancillary
+  variables). If it persists on a newer version, see PS-004.
+- **Fixed in:** 1.12.1
+
 ## PS-004: Render process killed (memory)
 
 - **Pattern:** `Render process (exceeded the memory budget|killed by the kernel OOM killer)`

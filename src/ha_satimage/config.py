@@ -365,6 +365,9 @@ class StorageConfig(BaseModel):
         return value.rstrip("/") or ("/" if value else "")
 
 
+MAX_RENDER_WORKERS = 8
+
+
 class ArchiveConfig(BaseModel):
     """Raw data archive of MTG FCI chunks + archive of pre-rendered images.
 
@@ -384,6 +387,9 @@ class ArchiveConfig(BaseModel):
     render_all: bool = False
     render_retention_hours: int = Field(default=24, ge=0, le=720)
     render_max_storage_mb: int = Field(default=2000, gt=0)
+    # Archive images rendered at the same time; each render child gets
+    # 1/render_workers of the memory budget (larger cut-outs run alone).
+    render_workers: int = Field(default=1, ge=1, le=MAX_RENDER_WORKERS)
 
     @model_validator(mode="after")
     def _ordered(self) -> "ArchiveConfig":

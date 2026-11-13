@@ -167,7 +167,7 @@
       {% for region in config.regions %}
       <div class="region-card" data-testid="region-{{ region.name }}" data-region="{{ region.name }}">
         <h3>{{ region.name }}</h3>
-        <div class="muted" data-testid="region-position-{{ region.name }}">{% if region.lonlat_extent %}European overview · {{ region.lonlat_extent | join(", ") }} · {% else %}{{ region.lat }}, {{ region.lon }} · {{ region.radius_km }} km · {% endif %}{{ region.width }}×{{ region.height }} px</div>
+        <div class="muted" data-testid="region-position-{{ region.name }}">{% if region.lonlat_extent %}{{ region.lonlat_extent | join(", ") }}{% else %}{{ region.lat }}, {{ region.lon }} · {{ region.radius_km }} km{% endif %}</div>
         <div class="row location-actions">
           <button type="button" class="location-edit" data-region="{{ region.name }}"
                   data-testid="location-edit-{{ region.name }}">📍 Change location</button>
@@ -336,11 +336,25 @@
           <input id="archive-render-storage" type="number" min="1" step="1"
                  data-testid="archive-render-storage" value="{{ config.archive.render_max_storage_mb }}">
         </div>
+        <div>
+          <label for="archive-render-workers">Parallel archive renders</label>
+          <input id="archive-render-workers" type="number" min="1" max="8" step="1"
+                 data-testid="archive-render-workers" value="{{ config.archive.render_workers }}">
+        </div>
       </div>
+      <p class="muted">Each parallel render gets its share of the render memory budget; cut-outs
+        that need more are repeated alone. Only raise this with enough memory and CPU cores
+        (container limit).</p>
       <div class="row">
         <button type="button" data-testid="archive-render-now">Archive all sources now</button>
         <span class="message" data-testid="archive-render-message" role="status"></span>
       </div>
+      <div class="row">
+        <button type="button" data-testid="archive-missing-check">Check missing images</button>
+        <button type="button" data-testid="archive-backfill">Render missing images</button>
+        <span class="message" data-testid="archive-backfill-message" role="status"></span>
+      </div>
+      <p class="muted" data-testid="archive-missing-summary"></p>
       <div class="row">
         <button type="button" data-testid="archive-clear">Clear archive</button>
         <span class="message" data-testid="archive-clear-message" role="status"></span>
@@ -1079,6 +1093,50 @@
         event.target.disabled = false;
       }
     });
+    function renderMissingSummary(m) {
+      const parts = [m.missing + " image(s) missing for the downloaded scans"
+        + " (" + m.workers + " parallel render(s))."];
+      for (const s of m.sources) {
+        if (s.placeholder) continue;
+        parts.push(s.source + ": " + s.archived + " of " + s.expected + " archived in "
+          + s.captures + " scan(s)"
+          + (s.missing ? ", " + s.missing + " missing" : "")
+          + (s.paused ? " (" + s.paused + " paused after failures)" : "")
+          + (s.running ? ", rendering …" : "") + ".");
+      }
+      byTestId("archive-missing-summary").textContent = parts.join(" ");
+    }
+    byTestId("archive-missing-check").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const message = byTestId("archive-backfill-message");
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/archive/missing");
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        renderMissingSummary(await response.json());
+        showMessage(message, "", true);
+      } catch (err) {
+        showMessage(message, "Failed: " + err.message, false);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    byTestId("archive-backfill").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const message = byTestId("archive-backfill-message");
+      button.disabled = true;
+      showMessage(message, "Starting …", true);
+      try {
+        const result = await postJson("/api/archive/backfill", {});
+        renderMissingSummary(result);
+        showMessage(message, "Rendering " + result.missing + " missing image(s) with "
+          + result.workers + " parallel render(s) – this runs in the background.", true);
+      } catch (err) {
+        showMessage(message, "Failed: " + err.message, false);
+      } finally {
+        button.disabled = false;
+      }
+    });
     byTestId("archive-clear").addEventListener("click", async (event) => {
       if (!window.confirm("Delete all archived images and FCI raw data? This cannot be undone. "
           + "Normal image history is kept. Only new scans will be archived afterwards.")) return;
@@ -1118,6 +1176,7 @@
           archive_render_all: document.getElementById("archive-render-all").checked,
           archive_render_retention_hours: parseInt(document.getElementById("archive-render-retention").value, 10),
           archive_render_max_storage_mb: parseInt(document.getElementById("archive-render-storage").value, 10),
+          archive_render_workers: parseInt(document.getElementById("archive-render-workers").value, 10),
         });
         delete document.getElementById("storage-path").dataset.touched;
         showMessage(message, "Saved. Storage location: " + result.current + " (" + result.moved_frames + " images moved).", true);
