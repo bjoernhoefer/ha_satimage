@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.13.1] — 2026-11-13
+
+### Fixed
+
+- Archive runs and "Render missing images" no longer render scans older than
+  the oldest archived image while the rendered archive is at its storage
+  limit: the size pruning deleted them right away and they were rendered
+  again and again (endless backlog). The missing-image check reports them as
+  "older scan(s) skipped" and hints to raise the archive storage limit.
+
 ## [1.13.0] — 2026-11-13
 
 ### Added

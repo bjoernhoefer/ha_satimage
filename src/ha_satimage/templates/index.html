@@ -1102,7 +1102,12 @@
           + s.captures + " scan(s)"
           + (s.missing ? ", " + s.missing + " missing" : "")
           + (s.paused ? " (" + s.paused + " paused after failures)" : "")
+          + (s.over_limit ? ", " + s.over_limit + " older scan(s) skipped" : "")
           + (s.running ? ", rendering …" : "") + ".");
+      }
+      if (m.storage_full) {
+        parts.push("Archive storage limit reached: scans older than the oldest archived image"
+          + " are not rendered – raise \"Archive storage limit (MB)\" to keep them.");
       }
       byTestId("archive-missing-summary").textContent = parts.join(" ");
     }

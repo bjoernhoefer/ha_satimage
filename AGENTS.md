@@ -206,6 +206,11 @@ for the whole batch, the renders run in threads with
 `satpy_render.parallel_render(budget / workers)` (no second lock, each
 child stopped at its share), and a render hitting its share is repeated
 alone with the full budget before it counts as a failure.
+When the rendered archive is full (`RenderArchive.storage_floor`: ≥ 95 % of
+`render_max_storage_mb`), scans older than its oldest image are neither
+rendered nor counted missing (`over_limit`, `storage_full`) — the size
+pruning would delete them right away and the backfill would re-render them
+endlessly.
 
 The per-region button "🗄 Archive" opens the archive viewer with a source
 and an image type select, JPEG/PNG format selection and time-lapse. Only
@@ -406,7 +411,7 @@ docker compose up -d
 
 - Semantic version in `src/ha_satimage/__init__.py` (`__version__`) and
   `pyproject.toml`; both must match (`tests/test_version.py`). Current:
-  **1.13.0**.
+  **1.13.1**.
 - Shown in the web UI footer and returned by `GET /api/version`.
 - Releases are git tags `vX.Y.Z`; CI builds them into the image tags
   `X.Y.Z`, `X.Y` and `latest`.

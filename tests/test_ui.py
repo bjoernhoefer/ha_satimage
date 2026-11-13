@@ -1293,9 +1293,10 @@ def test_render_missing_images_with_parallel_workers(request, page_fixture, live
 
     page.route("**/api/archive/missing", lambda route: route.fulfill(
         status=200, content_type="application/json", body=json.dumps({
-            "missing": 12, "workers": 3, "render_retention_hours": 24, "sources": [
+            "missing": 12, "workers": 3, "render_retention_hours": 24, "storage_full": True,
+            "sources": [
                 {"source": "mtg_fci_0665", "driver": "mtg_fci", "captures": 4, "expected": 20,
-                 "archived": 8, "missing": 12, "paused": 2, "running": True},
+                 "archived": 8, "missing": 12, "paused": 2, "running": True, "over_limit": 5},
                 {"source": "dummy", "driver": "dummy", "captures": 0, "expected": 0,
                  "archived": 0, "missing": 0, "paused": 0, "running": False, "placeholder": True},
             ],
@@ -1306,6 +1307,8 @@ def test_render_missing_images_with_parallel_workers(request, page_fixture, live
     expect(summary).to_contain_text("12 image(s) missing")
     expect(summary).to_contain_text("mtg_fci_0665: 8 of 20 archived in 4 scan(s), 12 missing")
     expect(summary).to_contain_text("2 paused after failures")
+    expect(summary).to_contain_text("5 older scan(s) skipped")
+    expect(summary).to_contain_text("Archive storage limit reached")
     expect(summary).not_to_contain_text("dummy")
     page.unroute("**/api/archive/missing")
 
