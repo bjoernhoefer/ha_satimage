@@ -35,6 +35,7 @@ class Frame:
     source: str | None = None
     composite: str | None = None
     borders: bool | None = None
+    regional_borders: bool | None = None
 
     def as_dict(self) -> dict:
         data = {"filename": self.filename, "created_at": self.created_at}
@@ -44,6 +45,8 @@ class Frame:
             data["composite"] = self.composite
         if self.borders is not None:
             data["borders"] = self.borders
+        if self.regional_borders is not None:
+            data["regional_borders"] = self.regional_borders
         return data
 
     def path(self, region_dir: Path) -> Path:
@@ -76,7 +79,7 @@ class RingBuffer:
             return []
         try:
             raw = json.loads(index_path.read_text(encoding="utf-8"))
-            known = {"filename", "created_at", "source", "composite", "borders"}
+            known = {"filename", "created_at", "source", "composite", "borders", "regional_borders"}
             frames = [Frame(**{k: v for k, v in entry.items() if k in known}) for entry in raw]
         except (ValueError, OSError, TypeError, AttributeError) as exc:
             # Never treat the frames as orphans because the index is broken
@@ -109,6 +112,7 @@ class RingBuffer:
         source: str | None = None,
         composite: str | None = None,
         borders: bool | None = None,
+        regional_borders: bool | None = None,
     ) -> Frame:
         """Add a new frame (PNG bytes) as the newest one and clean up.
 
@@ -130,6 +134,7 @@ class RingBuffer:
             frame = Frame(
                 filename=filename, created_at=ts.isoformat(), source=source, composite=composite,
                 borders=borders,
+                regional_borders=regional_borders,
             )
             self._frames.append(frame)
             self._cleanup()

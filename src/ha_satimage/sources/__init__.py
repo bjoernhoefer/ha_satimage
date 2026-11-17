@@ -171,6 +171,7 @@ class MsgSeviriSource(Source):
             height=region.height,
             label=region.name,
             borders=region.borders,
+            regional_borders=region.regional_borders,
             lonlat_extent=region.lonlat_extent,
         )
         try:
@@ -274,6 +275,7 @@ def render_fci_slot(
         height=region.height,
         label=region.name,
         borders=region.borders,
+        regional_borders=region.regional_borders,
         lonlat_extent=region.lonlat_extent,
     )
     try:

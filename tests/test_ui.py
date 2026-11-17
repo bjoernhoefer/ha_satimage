@@ -83,6 +83,7 @@ def test_page_shows_all_core_sections(ui):
         "region-source-wien",
         "region-composite-wien",
         "region-borders-wien",
+        "region-regional-borders-wien",
         "api-region",
         "api-link-latest",
         "location-add",
@@ -830,7 +831,11 @@ def test_change_composite_rerenders_and_updates_preview(request, page_fixture, l
     expect(ui.get_by_test_id("viewer-image")).to_have_attribute("src", latest["jpeg_url"])
 
 
-def test_toggle_borders_rerenders(ui, live_server):
+@pytest.mark.parametrize("field,label,testid", [
+    ("borders", "Country", "region-borders-wien"),
+    ("regional_borders", "Regional", "region-regional-borders-wien"),
+])
+def test_toggle_borders_rerenders(ui, live_server, field, label, testid):
     live_server.ensure_frames("wien", 1)
     from ha_satimage.archive import RenderArchive, region_signature
     from ha_satimage.config import RegionConfig
@@ -860,14 +865,14 @@ def test_toggle_borders_rerenders(ui, live_server):
         raise AssertionError("Archived images were not regenerated after changing borders")
 
     before = {f["filename"] for f in live_server.frames("wien")}
-    box = ui.get_by_test_id("region-borders-wien")
+    box = ui.get_by_test_id(testid)
     expect(box).to_be_checked()
 
     box.uncheck()
-    expect(ui.get_by_test_id("refresh-message-wien")).to_contain_text("Country borders disabled")
+    expect(ui.get_by_test_id("refresh-message-wien")).to_contain_text(f"{label} borders disabled")
     regions = {r["name"]: r for r in _stored(live_server)["regions"]}
-    assert regions["wien"]["borders"] is False
-    assert regions["mallorca"]["borders"] is True
+    assert regions["wien"][field] is False
+    assert regions["mallorca"][field] is True
     wait_for_archive_rerender(original.path)
 
     ui.wait_for_function(
@@ -876,12 +881,12 @@ def test_toggle_borders_rerenders(ui, live_server):
     )
     latest = live_server.frames("wien")[0]
     assert latest["filename"] not in before
-    assert latest["borders"] is False
+    assert latest[field] is False
 
     previous_path = archive.images("wien", "dummy", "cloudtop")[0].path
     previous_png = previous_path.read_bytes()
     box.check()
-    expect(ui.get_by_test_id("refresh-message-wien")).to_contain_text("Country borders enabled")
+    expect(ui.get_by_test_id("refresh-message-wien")).to_contain_text(f"{label} borders enabled")
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline and previous_path.read_bytes() == previous_png:
         time.sleep(0.1)
@@ -889,7 +894,7 @@ def test_toggle_borders_rerenders(ui, live_server):
     assert previous_path.read_bytes() != previous_png
 
     ui.reload()
-    expect(ui.get_by_test_id("region-borders-wien")).to_be_checked()
+    expect(ui.get_by_test_id(testid)).to_be_checked()
 
 
 def test_borders_checkbox_on_mobile(mobile_page, live_server):
@@ -898,6 +903,47 @@ def test_borders_checkbox_on_mobile(mobile_page, live_server):
     expect(box).to_be_visible()
     box.tap()
     expect(mobile_page.get_by_test_id("refresh-message-wien")).to_contain_text("Country borders disabled")
+
+
+@pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])
+def test_country_and_regional_borders_are_independent(request, page_fixture, live_server):
+    live_server.ensure_frames("wien", 1)
+    page = request.getfixturevalue(page_fixture)
+    page.goto(live_server.url + "/")
+    country = page.get_by_test_id("region-borders-wien")
+    regional = page.get_by_test_id("region-regional-borders-wien")
+    message = page.get_by_test_id("refresh-message-wien")
+    expect(country).to_be_visible()
+    expect(regional).to_be_visible()
+    expect(country).to_be_checked()
+    expect(regional).to_be_checked()
+    expect(page.get_by_test_id("region-regional-borders-europe")).not_to_be_checked()
+
+    for field, box, label, value in [
+        ("regional_borders", regional, "Regional", False),
+        ("borders", country, "Country", False),
+        ("regional_borders", regional, "Regional", True),
+        ("borders", country, "Country", True),
+    ]:
+        before = live_server.frames("wien")[0]["filename"]
+        box.set_checked(value)
+        expect(message).to_contain_text(f"{label} borders {'enabled' if value else 'disabled'}")
+        region = next(r for r in _stored(live_server)["regions"] if r["name"] == "wien")
+        assert region[field] is value
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            latest = live_server.frames("wien")[0]
+            if latest["filename"] != before and all(
+                latest[key] == region[key] for key in ("borders", "regional_borders")
+            ):
+                break
+            time.sleep(0.1)
+        assert latest["filename"] != before
+        assert latest["borders"] == region["borders"]
+        assert latest["regional_borders"] == region["regional_borders"]
+        page.reload()
+        expect(country).to_be_checked(checked=region["borders"])
+        expect(regional).to_be_checked(checked=region["regional_borders"])
 
 
 @pytest.mark.parametrize("page_fixture", ["ui", "mobile_page"])

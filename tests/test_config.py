@@ -23,9 +23,26 @@ def test_default_config_has_vienna_mallorca_and_europe():
     assert names == {"wien", "mallorca", "europe"}
     overview = config.region("europe")
     assert overview.borders is False
+    assert overview.regional_borders is False
     assert (overview.width, overview.height) == (1400, 1280)
     assert overview.bounding_box().as_tuple() == (33, -25, 72, 45)
     assert overview.composite == "natural_color_raw_with_night_ir"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_legacy_border_choice_is_preserved_and_can_be_split(tmp_path, enabled):
+    config = default_config().model_dump()
+    region = config["regions"][0]
+    region.pop("regional_borders")
+    region["borders"] = enabled
+    migrated = AppConfig(**config)
+    assert migrated.regions[0].regional_borders is enabled
+    migrated.regions[0].regional_borders = not enabled
+    path = tmp_path / "config.yaml"
+    save_config(migrated, path)
+    restored = load_config(path).regions[0]
+    assert restored.borders is enabled
+    assert restored.regional_borders is not enabled
 
 
 def test_region_bounding_box_uses_center_and_radius():

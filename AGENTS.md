@@ -220,20 +220,22 @@ archived.
 
 ### Country border overlay
 
-Per region, `borders: true` (default, checkbox "Draw country and regional
-borders") makes the render child process draw worldwide national borders
-and coastlines including islands (black, ~1 px) and worldwide administrative borders (states, provinces and
-similar regions; black, fainter, ~0.75 px) as anti-aliased hairlines into the
+Per region, `borders: true` (default, checkbox "Draw country borders")
+draws worldwide national borders and coastlines including islands (black, ~2 px).
+Independently, `regional_borders: true` (default, checkbox "Draw regional borders")
+draws worldwide administrative borders (states, provinces and
+similar regions; black, fainter, ~1.75 px) as anti-aliased lines into the
 image (`overlay.py`, 4× supersampled), for SEVIRI and FCI (also archive
 renders; the cache name contains the switch). Data: Natural Earth 1:10m
 `admin_0_boundary_lines_land` + `admin_1_states_provinces_lines` + `coastline` (public
 domain), packed in `overlay_data/borders_10m.json.gz` (~4.1 MB, regenerate
 with `scripts/build_borders.py`). Projected into the same LAEA as the target
 region — no pycoast/GSHHS needed. Toggling counts like a
-composite change (the frame remembers `borders`) and re-renders immediately.
+composite change (the frame remembers both flags) and re-renders immediately.
+Legacy configurations inherit `regional_borders` from `borders` once on load.
 Enabling borders updates existing archive PNGs and JPEGs without needing the
-original raw data; overlay upgrades add only missing layers. Disabling baked-in
-borders invalidates the archive and (with `render_all`) regenerates from
+original raw data; overlay upgrades refresh enabled layers. Disabling either baked-in
+layer invalidates the archive and (with `render_all`) regenerates from
 available source data. At startup with `render_all` on, retained FCI raw
 slots without images are rendered. Already deleted images without retained raw data cannot be recovered.
 
@@ -380,9 +382,11 @@ docker compose up -d
   concurrency `deploy-ha_satellite`; `azure` = runner
   `[self-hosted, linux, X64, deploy-satellite-azure]`, sudo as
   `ha-satimage`, concurrency `deploy-ha_satellite-azure`. Pushes deploy to
-  repository variable `DEPLOY_TARGETS` (`pi`, `azure`, `both`, `none` or a
-  comma list; unset = `pi`); manual runs choose `deploy_targets`
-  (`configured` = the variable). One build digest goes to every target,
+  both hosts; manual runs choose `deploy_targets`
+  (`configured` = repository variable `DEPLOY_TARGETS`, `pi`, `azure`, `both`,
+  `none` or a comma list; unset = `pi`). Pause the build workflow and drain/cancel
+  outstanding deploy jobs for host maintenance; the variable does not affect pushes.
+  One build digest goes to every target,
   each target deploys independently (`fail-fast: false`). Only pushes and
   manual workflow runs on `main` deploy; stale builds are skipped. Each
   runner runs as dedicated user `gh-deploy`, without Docker access, and may
@@ -411,7 +415,7 @@ docker compose up -d
 
 - Semantic version in `src/ha_satimage/__init__.py` (`__version__`) and
   `pyproject.toml`; both must match (`tests/test_version.py`). Current:
-  **1.13.1**.
+  **1.14.0**.
 - Shown in the web UI footer and returned by `GET /api/version`.
 - Releases are git tags `vX.Y.Z`; CI builds them into the image tags
   `X.Y.Z`, `X.Y` and `latest`.

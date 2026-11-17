@@ -103,7 +103,7 @@ def region_signature(region) -> str:
         str(v)
         for v in (
             region.lat, region.lon, region.radius_km,
-            region.width, region.height, region.borders, OVERLAY_VERSION,
+            region.width, region.height, region.borders, OVERLAY_VERSION, region.regional_borders,
         )
     )
     if region.lonlat_extent is not None:
@@ -373,15 +373,25 @@ class RenderArchive:
                 return False
             old = current.split("|") if current else []
             new = signature.split("|")
+            # Before the split, field 7 (if present) was the overview extent.
+            old_split = len(old) >= 8 and old[7] in ("True", "False")
+            new_split = len(new) >= 8 and new[7] in ("True", "False")
             same_geometry = (
-                len(old) in (5, 6, 7, 8) and old[:5] == new[:5]
-                and old[7:] == new[7:]
+                len(old) in (5, 6, 7, 8, 9) and old[:5] == new[:5]
+                and old[8 if old_split else 7:] == new[8 if new_split else 7:]
             )
             had_borders = len(old) >= 6 and old[5] == "True"
             has_borders = len(new) >= 6 and new[5] == "True"
-            if same_geometry and (has_borders or not had_borders):
-                if has_borders:
-                    self._update_overlays(region_name, signature, had_borders)
+            had_regional = old[7] == "True" if old_split else had_borders
+            has_regional = new[7] == "True" if new_split else has_borders
+            if same_geometry and not (
+                (had_borders and not has_borders) or (had_regional and not has_regional)
+            ):
+                upgraded = old[6:7] != new[6:7]
+                country = has_borders and (not had_borders or upgraded)
+                regional = has_regional and (not had_regional or upgraded)
+                if country or regional:
+                    self._update_overlays(region_name, signature, country, regional)
             elif current is not None or (base.is_dir() and any(p.is_dir() for p in base.iterdir())):
                 shutil.rmtree(base, ignore_errors=True)
                 logger.info("Archive %s: cut-out changed - archived images removed", region_name)
@@ -389,20 +399,17 @@ class RenderArchive:
             self._write_atomic(marker, signature.encode("utf-8"))
             return True
 
-    def _update_overlays(self, region: str, signature: str, had_borders: bool) -> None:
+    def _update_overlays(
+        self, region: str, signature: str, country: bool, regional: bool
+    ) -> None:
         from PIL import Image, PngImagePlugin
 
         from ha_satimage.media import to_jpeg
-        from ha_satimage.overlay import (
-            draw_borders,
-            draw_borders_lonlat,
-            draw_coastlines,
-            draw_coastlines_lonlat,
-        )
+        from ha_satimage.overlay import draw_borders, draw_borders_lonlat
 
         fields = signature.split("|")
         lat, lon, radius = map(float, fields[:3])
-        draw = draw_coastlines if had_borders else draw_borders
+        extent_index = 8 if len(fields) >= 8 and fields[7] in ("True", "False") else 7
         updated = 0
         for source, composites in self.combinations(region).items():
             for composite in composites:
@@ -416,13 +423,13 @@ class RenderArchive:
                             )
                             continue
                         image = original.convert("RGB")
-                    if len(fields) == 8:
-                        draw_lonlat = draw_coastlines_lonlat if had_borders else draw_borders_lonlat
-                        draw_lonlat(
-                            image, tuple(float(v) for v in fields[7].split(","))
+                    if len(fields) > extent_index:
+                        draw_borders_lonlat(
+                            image, tuple(float(v) for v in fields[extent_index].split(",")),
+                            country=country, regional=regional,
                         )
                     else:
-                        draw(image, lat, lon, radius)
+                        draw_borders(image, lat, lon, radius, country=country, regional=regional)
                     metadata = PngImagePlugin.PngInfo()
                     metadata.add_text("archive_overlay", signature)
                     png = io.BytesIO()

@@ -3,6 +3,22 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.14.0] — 2026-11-17
+
+### Added
+
+- Independent "Draw country borders" (including coastlines) and "Draw regional
+  borders" controls per location. Existing configurations retain their border
+  choices; both controls trigger immediate rendering and archive updates.
+
+### Changed
+
+- Border lines are one pixel thicker: country borders/coastlines are 2 px,
+  regional borders 1.75 px. Historical archive images are upgraded in place;
+  disabling a baked-in layer invalidates the archive for regeneration.
+- Pushes to `main` deploy the same image to both Pi and Azure. Manual runs
+  retain the target selector and `DEPLOY_TARGETS` configuration.
+
 ## [1.13.1] — 2026-11-13
 
 ### Fixed

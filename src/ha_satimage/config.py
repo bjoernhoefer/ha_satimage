@@ -182,7 +182,15 @@ class RegionConfig(BaseModel):
     max_frames: int | None = None
     # Draw country borders into the image (Natural Earth 1:10m, see overlay.py).
     borders: bool = True
+    regional_borders: bool = True
     lonlat_extent: tuple[float, float, float, float] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_borders(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "regional_borders" not in value:
+            return {**value, "regional_borders": value.get("borders", True)}
+        return value
 
     @field_validator("lonlat_extent")
     @classmethod

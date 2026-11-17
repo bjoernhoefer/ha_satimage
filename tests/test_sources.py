@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from ha_satimage import sources
-from ha_satimage.buffer import BufferManager
+from ha_satimage.buffer import BufferManager, RingBuffer
 from ha_satimage.config import COMPOSITES, AppConfig, ConfigStore, EumetsatCredentials, default_config
 from ha_satimage.scheduler import RenderScheduler
 from ha_satimage.sources import (
@@ -167,7 +167,8 @@ def config() -> AppConfig:
     return AppConfig(**data)
 
 
-def test_msg_seviri_renders_new_product(tmp_path, monkeypatch, config):
+@pytest.mark.parametrize("country,regional", [(True, False), (False, True), (True, True), (False, False)])
+def test_msg_seviri_renders_new_product(tmp_path, monkeypatch, config, country, regional):
     product = Product("MSG4-A", SENSING, tmp_path / "a.nat")
     monkeypatch.setattr(sources, "_product_cache", lambda: StubCache(product))
     seen = {}
@@ -178,13 +179,15 @@ def test_msg_seviri_renders_new_product(tmp_path, monkeypatch, config):
 
     monkeypatch.setattr("ha_satimage.sources.satpy_render.render_in_subprocess", fake_render)
 
-    frame = MsgSeviriSource().render(config.regions[0], config, SENSING - timedelta(minutes=5))
+    region = config.regions[0].model_copy(update={"borders": country, "regional_borders": regional})
+    frame = MsgSeviriSource().render(region, config, SENSING - timedelta(minutes=5))
 
     assert frame == RenderedFrame(b"PNG", SENSING)
     assert seen["request"].filenames == (str(product.path),)
     assert seen["request"].composite == config.regions[0].composite
     assert seen["request"].reader == "seviri_l1b_native"
-    assert seen["request"].borders is True
+    assert seen["request"].borders is country
+    assert seen["request"].regional_borders is regional
 
 
 def test_msg_seviri_skips_already_rendered_product(tmp_path, monkeypatch, config):
@@ -541,6 +544,18 @@ def test_switching_source_or_composite_renders_even_older_product(tmp_path, monk
     scheduler._run_region("wien")
     assert source.calls[calls + 1][2] is not None
     assert buffer().latest().filename == newest
+
+    calls = len(source.calls)
+    _switch(store, regional_borders=False)
+    scheduler._run_region("wien")
+    assert source.calls[calls][2] is None
+    assert buffer().latest().regional_borders is False
+    newest = buffer().latest().filename
+    scheduler._run_region("wien")
+    assert source.calls[calls + 1][2] is not None
+    assert buffer().latest().filename == newest
+    restored = RingBuffer(buffer().region_dir, max_frames=10)
+    assert restored.latest().regional_borders is False
 
 
 def _job_ids(scheduler) -> list[str]:

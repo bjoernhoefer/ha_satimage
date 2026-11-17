@@ -61,7 +61,7 @@ def test_deployment_contract(deploy_job, targets_job):
     assert targets_job["permissions"] == {}
     resolve = targets_job["steps"][0]
     assert resolve["env"] == {
-        "REQUESTED": "${{ inputs.deploy_targets }}",
+        "REQUESTED": "${{ github.event_name == 'push' && 'both' || inputs.deploy_targets }}",
         "CONFIGURED": "${{ vars.DEPLOY_TARGETS }}",
     }
     assert "${{" not in resolve["run"]

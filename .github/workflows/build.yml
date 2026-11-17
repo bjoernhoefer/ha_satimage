@@ -92,7 +92,7 @@ jobs:
       - name: Resolve rollout targets
         id: resolve
         env:
-          REQUESTED: ${{ inputs.deploy_targets }}
+          REQUESTED: ${{ github.event_name == 'push' && 'both' || inputs.deploy_targets }}
           CONFIGURED: ${{ vars.DEPLOY_TARGETS }}
         shell: bash
         run: |

@@ -1306,6 +1306,7 @@ class RenderScheduler:
                     and latest.source == region.source
                     and latest.composite == region.composite
                     and bool(latest.borders) == region.borders
+                    and latest.regional_borders == region.regional_borders
                 )
                 last_sensing = _parse_timestamp(latest.created_at) if same_origin else None
                 logger.info(
@@ -1323,6 +1324,7 @@ class RenderScheduler:
                         source=region.source,
                         composite=region.composite,
                         borders=region.borders,
+                        regional_borders=region.regional_borders,
                     )
                     logger.info(
                         "Render %s finished in %.1f s: %s (%d KB), %d frames in buffer",
@@ -1383,6 +1385,7 @@ class RenderScheduler:
             source=region.source,
             composite=MAINTENANCE_COMPOSITE,
             borders=region.borders,
+            regional_borders=region.regional_borders,
         )
         logger.info(
             "Region %s: source %s under maintenance (%s) - maintenance image shown",

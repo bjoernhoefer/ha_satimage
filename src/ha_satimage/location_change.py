@@ -211,6 +211,7 @@ class SatelliteMap:
                 height=MAP_HEIGHT,
                 label="Europe",
                 borders=True,
+                regional_borders=True,
                 lonlat_extent=EUROPE_EXTENT,
             )
             logger.info("Location map: rendering satellite background from %s", entry.id)
@@ -320,6 +321,7 @@ def add_location(config: AppConfig, payload: dict) -> AppConfig:
         source=source,
         composite=default_composite_for(entry.driver, entry.collection),
         borders=bool(payload.get("borders", True)),
+        regional_borders=bool(payload.get("regional_borders", payload.get("borders", True))),
     )
     return config.model_copy(update={"regions": [*config.regions, region]})
 
