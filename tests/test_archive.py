@@ -152,10 +152,13 @@ def test_overview_overlay_uses_lonlat_projection_and_preserves_scans(tmp_path, m
     archive.sync_region("europe", region_signature(overview))
     archive.store("europe", "dummy", "cloudtop", NOW, png("white", 200))
     calls = []
-    monkeypatch.setattr("ha_satimage.overlay.draw_borders_lonlat", lambda image, extent: calls.append(extent))
+    monkeypatch.setattr(
+        "ha_satimage.overlay.draw_borders_lonlat",
+        lambda image, extent, **layers: calls.append((extent, layers)),
+    )
     bordered = overview.model_copy(update={"borders": True})
     archive.sync_region("europe", region_signature(bordered))
-    assert calls == [overview.lonlat_extent]
+    assert calls == [(overview.lonlat_extent, {"country": True, "regional": False})]
     assert archive.count() == 1
     assert archive.images("europe", "dummy", "cloudtop")[0].created_at == NOW
     assert not archive.sync_region("europe", region_signature(bordered))
@@ -163,6 +166,53 @@ def test_overview_overlay_uses_lonlat_projection_and_preserves_scans(tmp_path, m
     local = bordered.model_copy(update={"lonlat_extent": None})
     archive.sync_region("europe", region_signature(local))
     assert archive.count() == 0
+
+
+@pytest.mark.parametrize("overview", [False, True])
+@pytest.mark.parametrize("layer", ["borders", "regional_borders"])
+def test_archive_adds_only_missing_layer_and_invalidates_removed_layer(tmp_path, monkeypatch, overview, layer):
+    from ha_satimage.config import europe_overview
+
+    archive = RenderArchive(tmp_path)
+    region = europe_overview() if overview else RegionConfig(
+        name="wien", lat=48.2, lon=16.4, radius_km=100,
+    )
+    region = region.model_copy(update={"borders": layer != "borders", "regional_borders": layer != "regional_borders"})
+    archive.sync_region(region.name, region_signature(region))
+    archive.store(region.name, "dummy", "cloudtop", NOW, png())
+    calls = []
+    draw = "draw_borders_lonlat" if overview else "draw_borders"
+    monkeypatch.setattr(
+        f"ha_satimage.overlay.{draw}", lambda *args, **layers: calls.append(layers),
+    )
+    enabled = region.model_copy(update={layer: True})
+    archive.sync_region(region.name, region_signature(enabled))
+    assert calls == [{"country": layer == "borders", "regional": layer == "regional_borders"}]
+    assert archive.images(region.name, "dummy", "cloudtop")[0].created_at == NOW
+    archive.sync_region(region.name, region_signature(region))
+    assert archive.count() == 0
+
+
+@pytest.mark.parametrize("overview", [False, True])
+def test_coastline_overlay_version_upgrades_without_losing_scans(tmp_path, monkeypatch, overview):
+    from ha_satimage.config import europe_overview
+
+    archive = RenderArchive(tmp_path)
+    region = europe_overview() if overview else RegionConfig(
+        name="wien", lat=48.2, lon=16.4, radius_km=100,
+    )
+    region = region.model_copy(update={"borders": True, "regional_borders": True})
+    legacy = region_signature(region).split("|")
+    legacy.pop(7)
+    legacy[6] = "coastlines-v1"
+    archive.sync_region(region.name, "|".join(legacy))
+    archive.store(region.name, "dummy", "cloudtop", NOW, png("white", 200))
+    calls = []
+    draw = "draw_borders_lonlat" if overview else "draw_borders"
+    monkeypatch.setattr(f"ha_satimage.overlay.{draw}", lambda *args, **layers: calls.append(layers))
+    archive.sync_region(region.name, region_signature(region))
+    assert calls == [{"country": True, "regional": True}]
+    assert archive.images(region.name, "dummy", "cloudtop")[0].created_at == NOW
 
 
 @pytest.mark.parametrize("previous_borders", [None, False, True])

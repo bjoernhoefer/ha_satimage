@@ -173,7 +173,8 @@ before the maintenance window to keep the final sync short.
 
 ```bash
 # Prevent CD from recreating the container meanwhile:
-#   GitHub → Settings → Variables → DEPLOY_TARGETS = azure (or none)
+#   GitHub → Actions → Build and publish container image → Disable workflow
+#   Wait for or cancel outstanding deploy jobs (pushes deploy to both hosts).
 DIR=$(sudo docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' ha_satellite)
 FILES=$(sudo docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' ha_satellite)
 sudo docker stop --time 60 ha_satellite
@@ -184,7 +185,7 @@ sudo python3 /tmp/ha_storage_migrate.py check-compose "$FILES"
 cd "$DIR" && sudo docker compose -f "$FILES" up -d --no-build --pull never --wait ha_satellite
 sudo docker logs ha_satellite 2>&1 | grep 'storage check'   # "... UUID e16ccc22-…"
 curl -s http://127.0.0.1:6060/api/diagnostics | python3 -m json.tool | head -40
-# Afterwards restore DEPLOY_TARGETS.
+# Afterwards re-enable the build workflow.
 ```
 
 `finalize` verifies with an rsync dry run (no differences in content,
@@ -241,7 +242,7 @@ comparable, and lower it only after the after measurement.
   meanwhile is kept):
 
   ```bash
-  # DEPLOY_TARGETS = azure/none during the rollback
+  # Disable the build workflow and drain/cancel deploy jobs during rollback.
   sudo docker stop --time 60 ha_satellite
   sudo python3 /tmp/ha_storage_migrate.py rollback   # NVMe → old dir, without --delete, removes marker
   sudo cp -p "$FILES.before-nvme" "$FILES"

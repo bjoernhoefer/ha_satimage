@@ -16,14 +16,14 @@ from functools import lru_cache
 from pathlib import Path
 
 BORDERS_FILE = Path(__file__).resolve().parent / "overlay_data" / "borders_10m.json.gz"
-OVERLAY_VERSION = "coastlines-v1"
-# Anti-aliased hairlines: drawn at SUPERSAMPLE times the size and
+OVERLAY_VERSION = "borders-v2"
+# Anti-aliased lines: drawn at SUPERSAMPLE times the size and
 # downscaled. Width in target pixels = line width / SUPERSAMPLE.
 SUPERSAMPLE = 4
 BORDER_COLOR = (0, 0, 0, 255)
-BORDER_WIDTH = 4  # ~1 px
+BORDER_WIDTH = 8  # ~2 px
 STATE_COLOR = (0, 0, 0, 170)
-STATE_WIDTH = 3  # ~0.75 px
+STATE_WIDTH = 7  # ~1.75 px
 # Points farther from the center than this multiple of the radius are
 # dropped (the line is split there) - keeps pixel values small.
 _CLIP_FACTOR = 1.5
@@ -142,41 +142,45 @@ def _draw_layers(image, layers, scale: int = SUPERSAMPLE):
     return image
 
 
-def draw_borders(image, lat: float, lon: float, radius_km: float):
-    """Draw state/country borders and coastlines as anti-aliased hairlines."""
+def draw_borders(
+    image, lat: float, lon: float, radius_km: float, *,
+    country: bool = True, regional: bool = True,
+):
+    """Draw the selected border layers; country borders include coastlines."""
     width, height = image.size
-    return _draw_layers(image, [
-        (border_segments(lat, lon, radius_km, width, height, "state_lines"), STATE_COLOR, STATE_WIDTH),
-        (border_segments(lat, lon, radius_km, width, height, "lines"), BORDER_COLOR, BORDER_WIDTH),
-        (border_segments(lat, lon, radius_km, width, height, "coast_lines"), BORDER_COLOR, BORDER_WIDTH),
-    ])
+    layers = []
+    if regional:
+        layers.append((
+            border_segments(lat, lon, radius_km, width, height, "state_lines"), STATE_COLOR, STATE_WIDTH,
+        ))
+    if country:
+        for kind in ("lines", "coast_lines"):
+            layers.append((
+                border_segments(lat, lon, radius_km, width, height, kind), BORDER_COLOR, BORDER_WIDTH,
+            ))
+    return _draw_layers(image, layers)
 
 
-def draw_coastlines(image, lat: float, lon: float, radius_km: float):
-    """Add only the new layer to archived images that already have borders."""
-    return _draw_layers(image, [
-        (border_segments(lat, lon, radius_km, *image.size, "coast_lines"), BORDER_COLOR, BORDER_WIDTH),
-    ])
-
-
-def draw_borders_lonlat(image, extent, scale: int = 2):
+def draw_borders_lonlat(
+    image, extent, scale: int = 2, *, country: bool = True, regional: bool = True,
+):
     """Same borders (style as ``draw_borders``) on a lon/lat map image.
 
     ``scale`` 2 instead of 4: the Europe map is large, 4x supersampling
     would need ~100 MB for the overlay alone.
     """
     width, height = image.size
-    return _draw_layers(image, [
-        (border_segments_lonlat(extent, width, height, "state_lines"), STATE_COLOR, STATE_WIDTH),
-        (border_segments_lonlat(extent, width, height, "lines"), BORDER_COLOR, BORDER_WIDTH),
-        (border_segments_lonlat(extent, width, height, "coast_lines"), BORDER_COLOR, BORDER_WIDTH),
-    ], scale)
-
-
-def draw_coastlines_lonlat(image, extent):
-    return _draw_layers(image, [
-        (border_segments_lonlat(extent, *image.size, "coast_lines"), BORDER_COLOR, BORDER_WIDTH),
-    ], scale=2)
+    layers = []
+    if regional:
+        layers.append((
+            border_segments_lonlat(extent, width, height, "state_lines"), STATE_COLOR, STATE_WIDTH,
+        ))
+    if country:
+        for kind in ("lines", "coast_lines"):
+            layers.append((
+                border_segments_lonlat(extent, width, height, kind), BORDER_COLOR, BORDER_WIDTH,
+            ))
+    return _draw_layers(image, layers, scale)
 
 
 __all__ = ["border_segments", "border_segments_lonlat", "draw_borders", "draw_borders_lonlat"]

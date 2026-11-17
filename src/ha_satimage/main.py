@@ -249,7 +249,10 @@ async def _save_config(old: AppConfig, new: AppConfig, move_existing: bool) -> i
     changed_borders = {
         region.name
         for region in new.regions
-        if region.name in old_regions and region.borders != old_regions[region.name].borders
+        if region.name in old_regions and (
+            region.borders != old_regions[region.name].borders
+            or region.regional_borders != old_regions[region.name].regional_borders
+        )
     }
     try:
         location_change.check_locations(old, new)
@@ -768,6 +771,7 @@ async def list_frames(region_name: str):
                 "source": frame.source,
                 "composite": frame.composite,
                 "borders": frame.borders,
+                "regional_borders": frame.regional_borders,
                 "url": f"/regions/{region_name}/history/{frame.filename}",
                 "jpeg_url": f"/regions/{region_name}/history/{Path(frame.filename).stem}.jpg",
             }

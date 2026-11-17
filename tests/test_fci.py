@@ -342,12 +342,15 @@ def test_render_fci_slot_reports_missing_chunks(tmp_path, monkeypatch):
 ] + [
     (FCI_HRFI_COLLECTION, composite) for composite in FCI_HRFI_COMPOSITES
 ])
+@pytest.mark.parametrize("country,regional", [(False, False), (True, False), (False, True), (True, True)])
 def test_europe_overview_fci_variants_use_extent_and_required_chunks(
-    tmp_path, monkeypatch, collection, composite
+    tmp_path, monkeypatch, collection, composite, country, regional
 ):
     from ha_satimage.config import europe_overview
 
     overview = europe_overview("mtg_fci")
+    overview.borders = country
+    overview.regional_borders = regional
     chunks = chunks_for_region(overview)
     assert chunks == set(range(32, 41))
     install_fake_eumdac(monkeypatch, [FakeFciProduct("FCI-A", SENSING)])
@@ -363,7 +366,8 @@ def test_europe_overview_fci_variants_use_extent_and_required_chunks(
     [render] = requests
     assert render.lonlat_extent == (-25, 33, 45, 72)
     assert render.composite == composite
-    assert render.borders is False
+    assert render.borders is country
+    assert render.regional_borders is regional
     assert {chunk_of(filename) for filename in render.filenames} == chunks
 
 

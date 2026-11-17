@@ -211,7 +211,12 @@
         <label class="inline">
           <input type="checkbox" class="region-borders" data-region="{{ region.name }}"
                  data-testid="region-borders-{{ region.name }}" {% if region.borders %}checked{% endif %}>
-          Draw country and regional borders
+          Draw country borders
+        </label>
+        <label class="inline">
+          <input type="checkbox" class="region-regional-borders" data-region="{{ region.name }}"
+                 data-testid="region-regional-borders-{{ region.name }}" {% if region.regional_borders %}checked{% endif %}>
+          Draw regional borders
         </label>
         <div class="warning" data-testid="region-warning-{{ region.name }}"
              {% if config.sources.is_enabled(region.source) %}hidden{% endif %}>
@@ -926,6 +931,10 @@
     document.querySelectorAll("input.region-borders").forEach((box) => {
       box.addEventListener("change", () => saveRegionField(box.dataset.region, "borders", box.checked,
         box.checked ? "Country borders enabled" : "Country borders disabled"));
+    });
+    document.querySelectorAll("input.region-regional-borders").forEach((box) => {
+      box.addEventListener("change", () => saveRegionField(box.dataset.region, "regional_borders", box.checked,
+        box.checked ? "Regional borders enabled" : "Regional borders disabled"));
     });
     document.querySelectorAll("select.region-composite").forEach((select) => {
       select.addEventListener("change", () => saveRegionField(select.dataset.region, "composite", select.value, "Image type saved"));

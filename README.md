@@ -126,12 +126,13 @@ on GitHub-hosted runners.
 | `pi` | `self-hosted`, `linux`, `ARM64`, `deploy-satellite` | `bjoern` | `deploy-ha_satellite` |
 | `azure` | `self-hosted`, `linux`, `X64`, `deploy-satellite-azure` | `ha-satimage` | `deploy-ha_satellite-azure` |
 
-- **Automatic (push to `main`):** repository variable `DEPLOY_TARGETS`
-  (*Settings → Secrets and variables → Actions → Variables*): `pi`,
-  `azure`, `both`, `none`, or a comma list such as `pi,azure`. Unset =
-  `pi` (previous behaviour).
+- **Automatic (push to `main`):** always deploys to both `pi` and `azure`.
 - **Manual:** *Actions → Build and publish container image → Run workflow*
-  on `main`, input `deploy_targets` (`configured` uses the variable).
+  on `main`, input `deploy_targets` (`configured` uses repository variable
+  `DEPLOY_TARGETS`: `pi`, `azure`, `both`, `none`, or a comma list; unset = `pi`).
+  To pause automatic deployments for maintenance, disable the build workflow
+  and wait for or cancel outstanding deploy jobs; changing the variable does
+  not affect pushes.
 
 Unknown values fail the run before any host is touched. Every target gets
 the same image digest, deploys independently (one failing host does not
@@ -439,7 +440,7 @@ for release tags; tag builds do not trigger deployment.
 
 ha_satimage uses [semantic versioning](https://semver.org/). The version is
 defined in `src/ha_satimage/__init__.py` (`__version__`) and in
-`pyproject.toml` (both must match; current: **1.13.1**). It is shown in the
+`pyproject.toml` (both must match; current: **1.14.0**). It is shown in the
 web UI footer and returned by `GET /api/version`.
 
 Releases are git tags `vX.Y.Z`; CI builds them into the image tags `X.Y.Z`,
@@ -503,12 +504,16 @@ Releases are git tags `vX.Y.Z`; CI builds them into the image tags `X.Y.Z`,
   archived afterwards. This clears a failing backlog, not the memory needs
   of future scans. API: `POST /api/archive/clear`; the response reports
   removed `images`, `raw_slots` and `cleared_before`.
-- **Border overlay**: country/administrative borders and worldwide coastlines
-  (including islands). Enabling borders or upgrading the overlay updates
+- **Border overlay**: independent "Draw country borders" (`borders`, including
+  worldwide coastlines and islands) and "Draw regional borders" (`regional_borders`,
+  states/provinces) switches per location. Country lines are 2 px, regional
+  lines approximately 1.75 px and fainter. Existing configurations keep both
+  layers on or off according to their previous combined setting.
+  Changing either switch renders immediately. Enabling a layer or upgrading the overlay updates
   historical archive PNGs and JPEGs without deleting their scans. On startup
   with "Download all sources", missing FCI images are rebuilt from retained raw data. Already deleted scans
   without retained raw data cannot be recovered. Moving a location or disabling
-  baked-in borders still invalidates its rendered archive.
+  either baked-in layer still invalidates its rendered archive.
 - **History**: rolling ring buffer per region under
   `<storage location>/{region}/`, duration configurable in the UI (default
   60 minutes), plus a storage limit (MB) as an emergency brake. Old frames

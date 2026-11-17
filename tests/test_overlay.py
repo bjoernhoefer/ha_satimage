@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 
 from ha_satimage.config import RegionConfig
-from ha_satimage.overlay import border_segments, border_segments_lonlat, draw_borders
+from ha_satimage.overlay import border_segments, border_segments_lonlat, draw_borders, draw_borders_lonlat
 
 VIENNA = (48.21, 16.37, 250)
 
@@ -51,7 +51,7 @@ def test_administrative_borders_are_available_worldwide():
     assert border_segments(37.25, -119.5, 400, 800, 800, kind="state_lines")
 
 
-def test_draw_borders_draws_thin_dark_lines():
+def test_draw_borders_draws_dark_lines():
     background = (120, 200, 80)
     image = Image.new("RGB", (800, 800), background)
     draw_borders(image, *VIENNA)
@@ -61,8 +61,31 @@ def test_draw_borders_draws_thin_dark_lines():
     # Black hairlines: only darkened, never lighter or colored.
     assert changed and all(p[0] <= 120 and p[1] <= 200 and p[2] <= 80 for p in changed)
     assert any(sum(p) < 100 for p in changed)
-    # Thin: roughly one pixel wide along the lines, no wide edge.
-    assert len(changed) < 0.06 * len(pixels)
+    assert len(changed) < 0.10 * len(pixels)
+
+
+@pytest.mark.parametrize("lonlat", [False, True])
+@pytest.mark.parametrize("country,regional", [(False, False), (True, False), (False, True), (True, True)])
+def test_selected_layers_and_thicker_strokes(monkeypatch, lonlat, country, regional):
+    positions = {"lines": 20, "state_lines": 50, "coast_lines": 80}
+
+    def segments(*args):
+        x = positions[args[-1]]
+        return [[(x, 0), (x, 100)]]
+
+    monkeypatch.setattr("ha_satimage.overlay.border_segments", segments)
+    monkeypatch.setattr("ha_satimage.overlay.border_segments_lonlat", segments)
+    image = Image.new("RGB", (100, 100), "white")
+    if lonlat:
+        draw_borders_lonlat(image, (-25, 33, 45, 72), scale=4, country=country, regional=regional)
+    else:
+        draw_borders(image, *VIENNA, country=country, regional=regional)
+    # Integrated darkness measures stroke width even with anti-aliasing.
+    for kind, x in positions.items():
+        darkness = sum(255 - image.getpixel((col, 50))[0] for col in range(x - 3, x + 4))
+        enabled = regional if kind == "state_lines" else country
+        expected = 1.75 * 170 if kind == "state_lines" else 2 * 255
+        assert darkness == pytest.approx(expected if enabled else 0, abs=2)
 
 
 def test_region_draws_borders_by_default():

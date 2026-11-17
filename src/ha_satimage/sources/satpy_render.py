@@ -96,6 +96,7 @@ class RenderRequest:
     # (lon_min, lat_min, lon_max, lat_max); lat/lon/radius are then unused.
     # Used for the location map of Europe (location_change.py).
     lonlat_extent: tuple[float, float, float, float] | None = None
+    regional_borders: bool = False
 
 
 def source_window(source_area, target_area, margin: int = WINDOW_MARGIN_PX):
@@ -270,14 +271,20 @@ def render_png(request: RenderRequest) -> tuple[bytes, datetime]:
 
     pil_image = get_enhanced_image(data).pil_image().convert("RGB")
     sensing_end = data.attrs["end_time"]
-    if request.borders and request.lonlat_extent is not None:
+    if (request.borders or request.regional_borders) and request.lonlat_extent is not None:
         from ha_satimage.overlay import draw_borders_lonlat
 
-        draw_borders_lonlat(pil_image, request.lonlat_extent)
-    elif request.borders:
+        draw_borders_lonlat(
+            pil_image, request.lonlat_extent,
+            country=request.borders, regional=request.regional_borders,
+        )
+    elif request.borders or request.regional_borders:
         from ha_satimage.overlay import draw_borders
 
-        draw_borders(pil_image, request.lat, request.lon, request.radius_km)
+        draw_borders(
+            pil_image, request.lat, request.lon, request.radius_km,
+            country=request.borders, regional=request.regional_borders,
+        )
     _annotate(pil_image, f"{request.label} · {sensing_end:%Y-%m-%d %H:%M} UTC · {request.composite}")
     out = BytesIO()
     pil_image.save(out, format="PNG", optimize=True)

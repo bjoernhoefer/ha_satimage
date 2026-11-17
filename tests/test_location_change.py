@@ -66,7 +66,7 @@ def test_outline_map_has_map_size(outline):
 
 @pytest.mark.parametrize(
     ("lat", "lon"),
-    [(47.5, 14.5), (52.3, 10.6), (40.3, -3.7), (46.5, 2.5), (59.5, 15.0), (52.3, -1.5)],
+    [(47.5, 14.5), (52.3, 10.6), (40.3, -3.7), (46.5, 3.0), (59.5, 15.0), (52.3, -1.5)],
 )
 def test_outline_map_draws_land(outline, lat, lon):
     assert _pixel(outline, lat, lon) == lc.LAND_COLOR
@@ -104,15 +104,15 @@ def test_border_segments_lonlat_are_linear_in_lon_and_lat():
     assert any(abs(x - 716) < 6 and abs(y - 199) < 6 for x, y in points)
 
 
-def test_draw_borders_lonlat_draws_thin_black_lines():
+def test_draw_borders_lonlat_draws_black_lines():
     background = (120, 200, 80)
     image = Image.new("RGB", (700, 390), background)
     draw_borders_lonlat(image, lc.EUROPE_EXTENT)
     pixels = list(image.get_flattened_data()) if hasattr(image, "get_flattened_data") else list(image.getdata())
     changed = [p for p in pixels if p != background]
     assert changed and all(p[0] <= 120 and p[1] <= 200 and p[2] <= 80 for p in changed)
-    # Coastlines add many hairlines around Europe's islands and fjords.
-    assert len(changed) < 0.25 * len(pixels)
+    # Two-pixel strokes, including Europe's islands and fjords.
+    assert len(changed) < 0.30 * len(pixels)
 
 
 # -- Satellite map -----------------------------------------------------------------
