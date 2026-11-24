@@ -759,6 +759,11 @@ class RenderScheduler:
     def _run_queued_archive(self, source_id: str, sensing: datetime) -> int:
         with self._download_lock:
             self._archive_queued.discard(source_id)
+        if not self._config_store.get().archive.render_all:
+            # Queued before "download all sources" was switched off: an FCI run
+            # would otherwise backfill every retained raw slot for hours.
+            logger.info("Archive %s: download all sources is off, queued run dropped", source_id)
+            return 0
         state = self._downloads.get(source_id)
         if state is not None and state.last_sensing is not None and state.last_sensing > sensing:
             sensing = state.last_sensing

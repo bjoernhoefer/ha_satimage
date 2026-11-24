@@ -383,9 +383,12 @@ def test_archive_runs_are_coalesced_per_source(tmp_path):
     from ha_satimage.scheduler import ARCHIVE_EXECUTOR, RenderScheduler
     from ha_satimage.status import StatusStore
 
-    scheduler = RenderScheduler(
-        ConfigStore(tmp_path / "config.yaml"), BufferManager(tmp_path / "frames"), StatusStore()
-    )
+    store = ConfigStore(tmp_path / "config.yaml")
+    config = store.get()
+    store.update(config.model_copy(
+        update={"archive": config.archive.model_copy(update={"render_all": True})}
+    ))
+    scheduler = RenderScheduler(store, BufferManager(tmp_path / "frames"), StatusStore())
     runs = []
     scheduler.archive_capture = lambda source, sensing: runs.append((source, sensing)) or 0
     for minutes in (0, 5, 10):
@@ -399,6 +402,16 @@ def test_archive_runs_are_coalesced_per_source(tmp_path):
     assert runs == [("msg_seviri", NOW)]
     scheduler._queue_archive("msg_seviri", NOW + timedelta(minutes=15))
     assert len([j for j in scheduler._scheduler.get_jobs() if "msg_seviri" in j.id]) == 2
+
+    # Switching "download all sources" off drops runs that were already queued.
+    config = store.get()
+    store.update(config.model_copy(
+        update={"archive": config.archive.model_copy(update={"render_all": False})}
+    ))
+    fci = next(j for j in jobs if "mtg_fci" in j.id)
+    assert fci.func(*fci.args) == 0
+    assert runs == [("msg_seviri", NOW)]
+    assert not scheduler._archive_running("mtg_fci")
 
 
 # --------------------------------------------------------------------------

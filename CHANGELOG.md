@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [1.14.1] — 2026-11-24
+
+### Fixed
+
+- Switching off "Download all sources" now also drops archive runs that were
+  already queued. Before, a queued MTG FCI run kept backfilling every retained
+  raw slot (up to ~1000 renders) and held the CPU at 100 % for hours.
+
 ## [1.14.0] — 2026-11-17
 
 ### Added
